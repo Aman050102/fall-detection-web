@@ -2,9 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as ort from 'onnxruntime-web';
 
-// ตั้งค่า Path สำหรับไฟล์ WASM ป้องกัน Error Backend
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
-ort.env.logLevel = 'error';
 
 interface FallDetectorProps {
   onFallDetected: () => void;
@@ -20,14 +18,12 @@ export default function FallDetector({ onFallDetected }: FallDetectorProps) {
     async function initAI() {
       try {
         const sess = await ort.InferenceSession.create('/model/best.onnx', {
-          executionProviders: ['wasm'], // ใช้ WASM เพื่อความเสถียรสูงสุด
+          executionProviders: ['wasm'],
         });
         sessionRef.current = sess;
         setLoading(false);
         await startCamera();
-      } catch (e) {
-        console.error("AI Load Error:", e);
-      }
+      } catch (e) { console.error("AI Load Error:", e); }
     }
     initAI();
   }, []);
@@ -36,32 +32,17 @@ export default function FallDetector({ onFallDetected }: FallDetectorProps) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment", width: 640, height: 640 },
-        audio: false,
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         requestAnimationFrame(processFrame);
       }
-    } catch (err) {
-      console.error("Camera Error:", err);
-    }
-  }
-
-  function preprocess(ctx: CanvasRenderingContext2D) {
-    const imgData = ctx.getImageData(0, 0, 640, 640).data;
-    const float32Data = new Float32Array(3 * 640 * 640);
-    for (let i = 0; i < 640 * 640; i++) {
-      float32Data[i] = imgData[i * 4] / 255.0;           // R
-      float32Data[i + 640 * 640] = imgData[i * 4 + 1] / 255.0;   // G
-      float32Data[i + 2 * 640 * 640] = imgData[i * 4 + 2] / 255.0; // B
-    }
-    return new ort.Tensor("float32", float32Data, [1, 3, 640, 640]);
+    } catch (err) { console.error("Camera Error:", err); }
   }
 
   async function processFrame() {
     if (!videoRef.current || videoRef.current.paused || !sessionRef.current) return;
-
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d", { willReadFrequently: true });
     if (!canvas || !ctx) return;
@@ -71,50 +52,45 @@ export default function FallDetector({ onFallDetected }: FallDetectorProps) {
     ctx.drawImage(videoRef.current, 0, 0);
 
     try {
-      const input = preprocess(ctx);
-      const outputs = await sessionRef.current.run({ images: input });
+      const imgData = ctx.getImageData(0, 0, 640, 640).data;
+      const input = new Float32Array(3 * 640 * 640);
+      for (let i = 0; i < 640 * 640; i++) {
+        input[i] = imgData[i * 4] / 255.0;
+        input[i + 640 * 640] = imgData[i * 4 + 1] / 255.0;
+        input[i + 2 * 640 * 640] = imgData[i * 4 + 2] / 255.0;
+      }
+      const tensor = new ort.Tensor("float32", input, [1, 3, 640, 640]);
+      const outputs = await sessionRef.current.run({ images: tensor });
       const output = outputs.output0.data as Float32Array;
 
-      // YOLOv8 Output Processing [1, 8, 8400]
       let foundFall = false;
       for (let i = 0; i < 8400; i++) {
-        const confidence = output[4 * 8400 + i]; // คลาส Falling
-        if (confidence > 0.65) {
-          const x_center = output[0 * 8400 + i] * (canvas.width / 640);
-          const y_center = output[1 * 8400 + i] * (canvas.height / 640);
+        const conf = output[4 * 8400 + i]; // คลาส Falling
+        if (conf > 0.65) {
+          const x = output[0 * 8400 + i] * (canvas.width / 640);
+          const y = output[1 * 8400 + i] * (canvas.height / 640);
           const w = output[2 * 8400 + i] * (canvas.width / 640);
           const h = output[3 * 8400 + i] * (canvas.height / 640);
-
-          // วาดกรอบสีแดงแจ้งเตือน
-          ctx.strokeStyle = "#FF0000";
-          ctx.lineWidth = 4;
-          ctx.strokeRect(x_center - w/2, y_center - h/2, w, h);
-
-          ctx.fillStyle = "#FF0000";
-          ctx.font = "bold 16px Arial";
-          ctx.fillText(`FALLING ${Math.round(confidence * 100)}%`, x_center - w/2, y_center - h/2 - 10);
+          ctx.strokeStyle = "#FF0000"; ctx.lineWidth = 4;
+          ctx.strokeRect(x - w / 2, y - h / 2, w, h);
           foundFall = true;
         }
       }
       if (foundFall) onFallDetected();
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) { console.error(e); }
     requestAnimationFrame(processFrame);
   }
 
   return (
-    <div className="relative w-full h-full bg-black overflow-hidden">
-      {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black z-50">
-          <p className="text-blue-500 font-bold animate-pulse tracking-widest">SYSTEM INITIALIZING...</p>
-        </div>
-      )}
+    <div className="relative w-full h-full bg-black">
       <video ref={videoRef} className="hidden" playsInline muted />
       <canvas ref={canvasRef} className="w-full h-full object-cover" />
-      <div className="absolute inset-0 pointer-events-none z-10">
-        <div className="w-full h-[2px] bg-blue-500 shadow-[0_0_15px_#3b82f6] animate-scan opacity-40"></div>
-      </div>
+      {loading && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-50">
+          <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+          <p className="text-blue-500 font-bold tracking-widest animate-pulse text-xs uppercase">AI Initializing</p>
+        </div>
+      )}
     </div>
   );
 }
