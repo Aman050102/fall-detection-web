@@ -1,23 +1,22 @@
 // src/hooks/useEmergency.ts
 export const useEmergency = () => {
   const triggerAlarm = (message: string) => {
-    // 1. ส่ง Notification (ต้องขออนุญาต User ก่อน)
+    // 1. ส่ง Notification (ลบ vibrate ออกจาก options เพื่อแก้ Type Error)
     if ("Notification" in window && Notification.permission === "granted") {
       new Notification("⚠️ ตรวจพบเหตุฉุกเฉิน", {
         body: message,
         icon: "/favicon.ico",
-        vibrate: [200, 100, 200],
       });
     }
 
-    // 2. สั่งสั่นเครื่อง (Vibration API)
+    // 2. สั่งสั่นเครื่องผ่าน Navigator API (มาตรฐานสำหรับมือถือ)
     if ("vibrate" in navigator) {
-      navigator.vibrate([500, 110, 500, 110, 800]); // รูปแบบสั่นเตือนภัย
+      navigator.vibrate([500, 110, 500, 110, 800]);
     }
 
-    // 3. ส่งเสียงไซเรน (Audio)
+    // 3. เสียงไซเรน (ต้องมีไฟล์ alarm-sound.mp3 ใน public)
     const audio = new Audio('/alarm-sound.mp3');
-    audio.play();
+    audio.play().catch(e => console.log("Audio play blocked by browser. Interaction required."));
   };
 
   const requestPermission = () => {
