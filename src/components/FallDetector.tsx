@@ -2,6 +2,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as ort from 'onnxruntime-web';
 
+// ตั้งค่า Path สำหรับไฟล์ WASM ป้องกัน Error Backend
+ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+ort.env.logLevel = 'error';
+
 interface FallDetectorProps {
   onFallDetected: () => void;
 }
@@ -9,108 +13,108 @@ interface FallDetectorProps {
 export default function FallDetector({ onFallDetected }: FallDetectorProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [session, setSession] = useState<ort.InferenceSession | null>(null);
+  const sessionRef = useRef<ort.InferenceSession | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const loadModel = async () => {
+    async function initAI() {
       try {
-        // แนะนำให้ใช้ wasm-unsafe-eval หรือตั้งค่าเพื่อให้ WebGL ทำงานได้ลื่น
         const sess = await ort.InferenceSession.create('/model/best.onnx', {
-          executionProviders: ['webgl'],
+          executionProviders: ['wasm'], // ใช้ WASM เพื่อความเสถียรสูงสุด
         });
-        setSession(sess);
+        sessionRef.current = sess;
         setLoading(false);
+        await startCamera();
       } catch (e) {
-        console.error("Failed to load model:", e);
+        console.error("AI Load Error:", e);
       }
-    };
-    loadModel();
-    startCamera();
+    }
+    initAI();
   }, []);
 
-  const startCamera = async () => {
+  async function startCamera() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: 640, height: 640 }
+        video: { facingMode: "environment", width: 640, height: 640 },
+        audio: false,
       });
-      if (videoRef.current) videoRef.current.srcObject = stream;
-    } catch (err) {
-      console.error("Camera error:", err);
-    }
-  };
-
-  // ฟังก์ชัน Post-processing สำหรับ YOLOv8
-  const process_output = (output: any, width: number, height: number) => {
-    const data = output.data;
-    let bestConf = 0;
-    let bestBox = null;
-
-    // YOLOv8 Output มักจะเป็น [1, 8, 8400] (x, y, w, h, cls0, cls1, cls2, cls3)
-    // คลาส 0 คือ Falling (ตาม Dataset ของคุณ)
-    for (let i = 0; i < 8400; i++) {
-      const conf = data[4 * 8400 + i]; // คลาส Falling
-      if (conf > 0.6 && conf > bestConf) {
-        bestConf = conf;
-        const x_center = data[0 * 8400 + i] * (width / 640);
-        const y_center = data[1 * 8400 + i] * (height / 640);
-        const w = data[2 * 8400 + i] * (width / 640);
-        const h = data[3 * 8400 + i] * (height / 640);
-        bestBox = { x: x_center - w / 2, y: y_center - h / 2, w, h, conf };
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        requestAnimationFrame(processFrame);
       }
+    } catch (err) {
+      console.error("Camera Error:", err);
     }
-    return bestBox;
-  };
+  }
 
-  useEffect(() => {
-    if (!session || !videoRef.current) return;
+  function preprocess(ctx: CanvasRenderingContext2D) {
+    const imgData = ctx.getImageData(0, 0, 640, 640).data;
+    const float32Data = new Float32Array(3 * 640 * 640);
+    for (let i = 0; i < 640 * 640; i++) {
+      float32Data[i] = imgData[i * 4] / 255.0;           // R
+      float32Data[i + 640 * 640] = imgData[i * 4 + 1] / 255.0;   // G
+      float32Data[i + 2 * 640 * 640] = imgData[i * 4 + 2] / 255.0; // B
+    }
+    return new ort.Tensor("float32", float32Data, [1, 3, 640, 640]);
+  }
 
-    const detect = async () => {
-      if (!videoRef.current || videoRef.current.paused) return;
+  async function processFrame() {
+    if (!videoRef.current || videoRef.current.paused || !sessionRef.current) return;
 
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext('2d');
-      if (!canvas || !ctx) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d", { willReadFrequently: true });
+    if (!canvas || !ctx) return;
 
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    ctx.drawImage(videoRef.current, 0, 0);
 
-      // 1. ดึงภาพมาทำ Preprocessing
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+    try {
+      const input = preprocess(ctx);
+      const outputs = await sessionRef.current.run({ images: input });
+      const output = outputs.output0.data as Float32Array;
 
-      // หมายเหตุ: ในการรันจริงต้องแปลง ImageData เป็น Float32Tensor
-      // โค้ดส่วนนี้เป็นโครงสร้างหลักสำหรับการวาดผลลัพธ์
-      try {
-        // const input = preprocess(canvas);
-        // const results = await session.run({ images: input });
-        // const box = process_output(results.output0, canvas.width, canvas.height);
+      // YOLOv8 Output Processing [1, 8, 8400]
+      let foundFall = false;
+      for (let i = 0; i < 8400; i++) {
+        const confidence = output[4 * 8400 + i]; // คลาส Falling
+        if (confidence > 0.65) {
+          const x_center = output[0 * 8400 + i] * (canvas.width / 640);
+          const y_center = output[1 * 8400 + i] * (canvas.height / 640);
+          const w = output[2 * 8400 + i] * (canvas.width / 640);
+          const h = output[3 * 8400 + i] * (canvas.height / 640);
 
-        // ตัวอย่างการวาดเมื่อตรวจพบ (คุณต้องนำพิกัดจาก results มาใส่)
-        // if (box) {
-        //   ctx.strokeStyle = "#ef4444";
-        //   ctx.lineWidth = 4;
-        //   ctx.strokeRect(box.x, box.y, box.w, box.h);
-        //   onFallDetected();
-        // }
-      } catch (e) { console.error(e); }
+          // วาดกรอบสีแดงแจ้งเตือน
+          ctx.strokeStyle = "#FF0000";
+          ctx.lineWidth = 4;
+          ctx.strokeRect(x_center - w/2, y_center - h/2, w, h);
 
-      requestAnimationFrame(detect);
-    };
-    detect();
-  }, [session]);
+          ctx.fillStyle = "#FF0000";
+          ctx.font = "bold 16px Arial";
+          ctx.fillText(`FALLING ${Math.round(confidence * 100)}%`, x_center - w/2, y_center - h/2 - 10);
+          foundFall = true;
+        }
+      }
+      if (foundFall) onFallDetected();
+    } catch (e) {
+      console.error(e);
+    }
+    requestAnimationFrame(processFrame);
+  }
 
   return (
-    <div className="relative w-full h-full bg-black">
+    <div className="relative w-full h-full bg-black overflow-hidden">
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-slate-950 z-20">
-          <div className="text-center animate-pulse">
-            <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-blue-400 font-bold">LOADING AI BRAIN...</p>
-          </div>
+        <div className="absolute inset-0 flex items-center justify-center bg-black z-50">
+          <p className="text-blue-500 font-bold animate-pulse tracking-widest">SYSTEM INITIALIZING...</p>
         </div>
       )}
-      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-      <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
+      <video ref={videoRef} className="hidden" playsInline muted />
+      <canvas ref={canvasRef} className="w-full h-full object-cover" />
+      <div className="absolute inset-0 pointer-events-none z-10">
+        <div className="w-full h-[2px] bg-blue-500 shadow-[0_0_15px_#3b82f6] animate-scan opacity-40"></div>
+      </div>
     </div>
   );
 }
