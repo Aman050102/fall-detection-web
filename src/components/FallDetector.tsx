@@ -1,8 +1,9 @@
 "use client";
 import React, { useEffect, useRef, useState } from 'react';
 import * as ort from 'onnxruntime-web';
+import { CameraSync } from 'lucide-react';
 
-// 1. ตั้งค่า Path สำหรับไฟล์ WASM ของ ONNX Runtime (ดึงจาก CDN เพื่อความเร็วและลดขนาด Build)
+// 1. ตั้งค่า Path สำหรับไฟล์ WASM ของ ONNX Runtime
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
 ort.env.logLevel = 'error';
 
@@ -15,22 +16,19 @@ export default function FallDetector({ onFallDetected }: FallDetectorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sessionRef = useRef<ort.InferenceSession | null>(null);
 
-  // States สำหรับจัดการ UI
   const [loading, setLoading] = useState(true);
   const [cameraName, setCameraName] = useState<string>("กำลังค้นหากล้อง...");
   const [error, setError] = useState<string | null>(null);
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
 
   useEffect(() => {
     const initAI = async () => {
       try {
-        // โหลดโมเดล YOLOv8 (.onnx)
         const sess = await ort.InferenceSession.create('/model/best.onnx', {
-          executionProviders: ['wasm'], // ใช้ WASM เพื่อความเสถียรสูงสุดบนเบราว์เซอร์
+          executionProviders: ['wasm'],
         });
         sessionRef.current = sess;
         setLoading(false);
-
-        // เริ่มต้นการหากล้อง (รองรับ GoPro Webcam)
         await startCamera();
       } catch (e) {
         console.error("AI Initialization Error:", e);
@@ -39,76 +37,76 @@ export default function FallDetector({ onFallDetected }: FallDetectorProps) {
     };
     initAI();
 
-    // Cleanup: ปิดกล้องเมื่อออกจากหน้าจอเพื่อประหยัดทรัพยากร
     return () => {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach(track => track.stop());
-      }
+      stopCamera();
     };
-  }, []);
+  }, [facingMode]); // รีโหลดเมื่อสลับกล้องหน้า/หลัง
+
+  const stopCamera = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+    }
+  };
 
   const startCamera = async () => {
     try {
-      // ขอสิทธิ์การใช้งานกล้องเบื้องต้น
-      await navigator.mediaDevices.getUserMedia({ video: true });
-
-      // รายชื่ออุปกรณ์วิดีโอทั้งหมด
+      stopCamera();
+      // ขอสิทธิ์และดึงรายชื่ออุปกรณ์
+      const streamCheck = await navigator.mediaDevices.getUserMedia({ video: true });
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      streamCheck.getTracks().forEach(t => t.stop());
 
       if (videoDevices.length === 0) throw new Error("ไม่พบอุปกรณ์กล้อง");
 
-      // ค้นหา GoPro: มองหาชื่อที่มีคำว่า "GoPro" หรือเลือกตัวล่าสุดที่เสียบเข้ามา
-      let selectedDevice = videoDevices.find(d => d.label.toLowerCase().includes('gopro')) || videoDevices[videoDevices.length - 1];
+      // ค้นหา GoPro หรือเลือกตาม facingMode (สำหรับมือถือ)
+      let selectedDevice = videoDevices.find(d => d.label.toLowerCase().includes('gopro'));
 
-      setCameraName(selectedDevice.label || "กล้องภายนอก");
-
-      const constraints = {
+      const constraints: MediaStreamConstraints = {
         video: {
-          deviceId: { exact: selectedDevice.deviceId },
-          width: { ideal: 640 }, // YOLOv8 มาตรฐานใช้ 640x640
+          // หากเจอ GoPro ให้ล็อคที่ GoPro ถ้าไม่เจอให้ใช้ facingMode (หน้า/หลัง)
+          deviceId: selectedDevice ? { exact: selectedDevice.deviceId } : undefined,
+          facingMode: selectedDevice ? undefined : facingMode,
+          width: { ideal: 640 },
           height: { ideal: 640 },
           aspectRatio: 1
         }
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      setCameraName(selectedDevice?.label || (facingMode === "user" ? "กล้องหน้า" : "กล้องหลัง"));
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play();
-          // เริ่มลูปการตรวจจับ
           requestAnimationFrame(detect);
         };
       }
     } catch (err) {
       console.error("Camera Access Error:", err);
-      setError("ไม่สามารถเชื่อมต่อกับ GoPro ได้ (กรุณาเปิด GoPro Webcam Utility)");
+      setError("ไม่สามารถเข้าถึงกล้องได้ กรุณาตรวจสอบการอนุญาตสิทธิ์");
     }
   };
 
   const detect = async () => {
-    // ตรวจสอบความพร้อมของทรัพยากร
     if (!videoRef.current || !sessionRef.current || !canvasRef.current || videoRef.current.paused) {
-      requestAnimationFrame(detect);
+      if (!videoRef.current?.paused) requestAnimationFrame(detect);
       return;
     }
 
     const ctx = canvasRef.current.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
-    // 2. Pre-processing: วาดภาพจากวิดีโอลง Canvas และดึงข้อมูลพิกเซล
     ctx.drawImage(videoRef.current, 0, 0, 640, 640);
     const imgData = ctx.getImageData(0, 0, 640, 640).data;
 
-    // แปลงพิกเซลเป็นรูปแบบ Tensor (Float32, RGB, Normalized 0-1)
     const input = new Float32Array(3 * 640 * 640);
     for (let i = 0; i < 640 * 640; i++) {
-      input[i] = imgData[i * 4] / 255;           // Red
-      input[i + 640 * 640] = imgData[i * 4 + 1] / 255; // Green
-      input[i + 2 * 640 * 640] = imgData[i * 4 + 2] / 255; // Blue
+      input[i] = imgData[i * 4] / 255;           // R
+      input[i + 640 * 640] = imgData[i * 4 + 1] / 255; // G
+      input[i + 2 * 640 * 640] = imgData[i * 4 + 2] / 255; // B
     }
 
     try {
@@ -117,62 +115,51 @@ export default function FallDetector({ onFallDetected }: FallDetectorProps) {
       const data = output.output0.data as Float32Array;
 
       let foundFall = false;
-
-      // 3. Post-processing: คัดกรองผลลัพธ์จาก YOLOv8 (8400 candidates)
       for (let i = 0; i < 8400; i++) {
-        const confidence = data[4 * 8400 + i]; // Confidence score
-
-        // ถ้าความมั่นใจเกิน 65% ให้ถือว่าตรวจพบ
+        const confidence = data[4 * 8400 + i];
         if (confidence > 0.65) {
           const x = data[0 * 8400 + i];
           const y = data[1 * 8400 + i];
           const w = data[2 * 8400 + i];
           const h = data[3 * 8400 + i];
-
-          // วาดกรอบสีแดงแจ้งเตือนบนหน้าจอ
           ctx.strokeStyle = "#FF3131";
           ctx.lineWidth = 6;
           ctx.strokeRect(x - w / 2, y - h / 2, w, h);
-
           foundFall = true;
         }
       }
-
-      if (foundFall) {
-        onFallDetected(); // ส่งสัญญาณไปที่ Firebase/Monitor
-      }
-    } catch (e) {
-      // ปล่อยผ่านกรณีเกิด Error เล็กน้อยในลูป เพื่อให้ระบบรันต่อได้
-    }
-
-    // วนลูปการตรวจจับต่อไป
+      if (foundFall) onFallDetected();
+    } catch (e) { }
     requestAnimationFrame(detect);
+  };
+
+  const toggleCamera = () => {
+    setFacingMode(prev => prev === "user" ? "environment" : "user");
   };
 
   return (
     <div className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden rounded-[2rem]">
-      {/* วิดีโอต้นฉบับ (ถูกซ่อนไว้เพื่อแสดงผลผ่าน Canvas แทน) */}
       <video ref={videoRef} playsInline muted className="hidden" />
+      <canvas ref={canvasRef} width={640} height={640} className="w-full h-full object-contain" />
 
-      {/* หน้าจอหลักที่ผู้ใช้เห็น (Canvas) */}
-      <canvas
-        ref={canvasRef}
-        width={640}
-        height={640}
-        className="w-full h-full object-contain"
-      />
-
-      {/* Overlay: ข้อมูลกล้อง */}
+      {/* แถบข้อมูลกล้อง */}
       {!loading && !error && (
-        <div className="absolute top-6 left-6 flex items-center gap-2 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10">
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-          <p className="text-[11px] text-white font-medium uppercase tracking-wider">
-            {cameraName}
-          </p>
+        <div className="absolute top-6 left-6 right-6 flex justify-between items-center">
+          <div className="flex items-center gap-2 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+            <p className="text-[11px] text-white font-medium uppercase tracking-wider">{cameraName}</p>
+          </div>
+
+          {/* ปุ่มสลับกล้องหน้า/หลัง (สำหรับมือถือ) */}
+          <button
+            onClick={toggleCamera}
+            className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-xl rounded-2xl border border-white/10 text-white transition-all active:scale-90"
+          >
+            <CameraSync size={20} />
+          </button>
         </div>
       )}
 
-      {/* สถานะ Loading / Error */}
       {loading && (
         <div className="absolute inset-0 bg-zinc-950 flex flex-col items-center justify-center z-10">
           <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
@@ -182,8 +169,8 @@ export default function FallDetector({ onFallDetected }: FallDetectorProps) {
 
       {error && (
         <div className="absolute inset-0 bg-zinc-950 flex flex-col items-center justify-center z-10 p-6 text-center">
-          <p className="text-red-500 font-bold mb-2">ERROR</p>
-          <p className="text-white/60 text-xs uppercase tracking-widest">{error}</p>
+          <p className="text-red-500 font-bold mb-2 uppercase tracking-widest">Error</p>
+          <p className="text-white/60 text-[10px] uppercase leading-relaxed">{error}</p>
         </div>
       )}
     </div>
