@@ -1,23 +1,32 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, IBM_Plex_Sans_Thai } from "next/font/google";
+import { IBM_Plex_Sans_Thai } from "next/font/google";
 import "./globals.css";
 
+// ตั้งค่าฟอนต์ไทย (IBM Plex Sans Thai)
 const thaiFont = IBM_Plex_Sans_Thai({
-  weight: ['400', '600', '700'],
+  weight: ['400', '500', '600', '700'],
   subsets: ["thai"],
   variable: "--font-thai"
 });
 
+// 1. ตั้งค่า Viewport (แยกออกมาตามมาตรฐาน Next.js 14+)
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  themeColor: "#020617",
 };
 
+// 2. ตั้งค่า Metadata เพื่อเปลี่ยนชื่อเว็บและโลโก้ (Favicon)
 export const metadata: Metadata = {
-  title: "Fall Guard AI - ระบบเฝ้าระวังอัจฉริยะ",
-  description: "ระบบตรวจจับการล้มด้วย AI และแจ้งเตือนแบบ Real-time",
+  title: "Guard Vision | AI Fall Detection",
+  description: "ระบบตรวจจับการหกล้มอัจฉริยะและแจ้งเตือนเรียลไทม์",
+  icons: {
+    icon: "/logo.png",       // ไฟล์ต้องอยู่ใน public/logo.png
+    shortcut: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({
@@ -26,9 +35,20 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="th" className={thaiFont.variable}>
-      <body className="font-thai antialiased bg-[#020617] text-slate-100">
-        {children}
+    <html lang="th" className={`${thaiFont.variable} scroll-smooth`}>
+      <body className="font-thai antialiased bg-[#020617] text-slate-100 min-h-screen selection:bg-blue-500/30">
+
+        {/* Container หลักสำหรับการจัด Layout */}
+        <div className="relative flex flex-col min-h-screen">
+          {children}
+        </div>
+
+        {/* ตกแต่งพื้นหลังเรืองแสง (Background Glow) */}
+        <div className="fixed inset-0 -z-10 pointer-events-none overflow-hidden">
+          <div className="absolute -top-[10%] -left-[10%] w-[40%] h-[40%] bg-blue-900/10 blur-[120px] rounded-full"></div>
+          <div className="absolute -bottom-[10%] -right-[10%] w-[40%] h-[40%] bg-red-900/10 blur-[120px] rounded-full"></div>
+        </div>
+
       </body>
     </html>
   );
