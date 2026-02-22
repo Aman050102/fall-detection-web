@@ -1,50 +1,104 @@
 "use client";
+import React from 'react';
 import Link from 'next/link';
-import { Camera, ShieldAlert, Activity } from 'lucide-react';
+import { Camera, ShieldAlert, Activity, ChevronRight } from 'lucide-react';
+import { useEmergency } from '@/hooks/useEmergency';
 
 export default function LandingPage() {
+  const { requestPermission } = useEmergency();
+
+  // ฟังก์ชันปลดล็อกสิทธิ์ระบบก่อนเข้าสู่หน้าใช้งานจริง
+  const handleStart = async () => {
+    try {
+      // 1. ขอสิทธิ์แจ้งเตือน (Notification)
+      await requestPermission();
+
+      // 2. ปลดล็อก Audio Context ของเบราว์เซอร์
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+      console.log("System Initialized: Permissions Secured");
+    } catch (err) {
+      console.warn("Permission handling skipped or denied:", err);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-white font-sans">
-      <div className="text-center mb-12 animate-in">
-        <div className="inline-block p-3 rounded-2xl bg-blue-500/10 border border-blue-500/20 mb-4">
-          <ShieldAlert className="text-blue-500" size={32} />
+    <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-6 text-white font-sans relative overflow-hidden">
+
+      {/* Background Effect ตกแต่ง */}
+      <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-blue-600/10 blur-[120px] rounded-full"></div>
+      <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-red-600/5 blur-[120px] rounded-full"></div>
+
+      <div className="text-center mb-16 z-10 animate-in fade-in slide-in-from-bottom-4 duration-1000">
+        <div className="inline-flex p-4 rounded-3xl bg-blue-500/10 border border-blue-500/20 mb-6 shadow-2xl shadow-blue-500/20">
+          <ShieldAlert className="text-blue-500" size={40} />
         </div>
-        <h1 className="text-4xl font-black tracking-tighter uppercase italic">
-          FALL GUARD <span className="text-blue-500">AI</span>
+        <h1 className="text-5xl md:text-6xl font-black tracking-tighter uppercase italic leading-none">
+          GUARD <span className="text-blue-500">VISION</span>
         </h1>
-        <p className="text-zinc-500 text-sm mt-2 tracking-widest uppercase font-bold">
-          Smart Surveillance System
+        <p className="text-zinc-500 text-[10px] md:text-xs mt-4 tracking-[0.5em] uppercase font-black opacity-70">
+          Next-Gen AI Fall Detection Protocol
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-3xl">
-        {/* ปุ่มไปหน้ากล้อง */}
-        <Link href="/camera" className="group relative bg-zinc-900 border border-zinc-800 p-8 rounded-[2.5rem] overflow-hidden hover:border-blue-500 transition-all duration-500">
-          <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-opacity">
-            <Camera size={80} />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-4xl z-10">
+
+        {/* --- CCTV MODE CARD --- */}
+        <Link
+          href="/camera"
+          onClick={handleStart}
+          className="group relative bg-zinc-900/50 backdrop-blur-xl border border-white/5 p-10 rounded-[3rem] overflow-hidden hover:border-blue-500/50 hover:bg-zinc-800/50 transition-all duration-500 shadow-2xl"
+        >
+          <div className="absolute -top-4 -right-4 p-8 opacity-[0.03] group-hover:opacity-10 group-hover:scale-110 transition-all duration-700">
+            <Camera size={160} />
           </div>
-          <Camera size={40} className="text-blue-500 mb-6" />
-          <h2 className="text-2xl font-bold mb-2 uppercase tracking-tight">CCTV Mode</h2>
-          <p className="text-zinc-500 text-sm leading-relaxed">
-            เปลี่ยนเครื่องนี้ให้เป็นกล้องตรวจจับอัจฉริยะ วางทิ้งไว้เพื่อเฝ้าระวังการล้ม
-          </p>
+
+          <div className="relative z-10">
+            <div className="w-14 h-14 bg-blue-500/10 rounded-2xl flex items-center justify-center mb-8 border border-blue-500/20 group-hover:bg-blue-500 group-hover:text-white transition-colors">
+              <Camera size={28} />
+            </div>
+            <h2 className="text-3xl font-black mb-3 uppercase italic tracking-tighter">CCTV Mode</h2>
+            <p className="text-zinc-400 text-sm leading-relaxed font-medium">
+              เปิดใช้งานกล้อง Edge AI สำหรับเฝ้าระวังการล้มในพื้นที่ ประมวลผลบนเครื่อง 100% เพื่อความเป็นส่วนตัว
+            </p>
+            <div className="mt-8 flex items-center gap-2 text-[10px] font-black text-blue-500 uppercase tracking-[0.2em]">
+              Initialize Node <ChevronRight size={14} className="group-hover:translate-x-1 transition-transform" />
+            </div>
+          </div>
         </Link>
 
-        {/* ปุ่มไปหน้ามอนิเตอร์ */}
-        <Link href="/monitor" className="group relative bg-zinc-900 border border-zinc-800 p-8 rounded-[2.5rem] overflow-hidden hover:border-red-500 transition-all duration-500">
-          <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-opacity">
-            <ShieldAlert size={80} />
+        {/* --- MONITOR MODE CARD --- */}
+        <Link
+          href="/monitor"
+          onClick={handleStart}
+          className="group relative bg-zinc-900/50 backdrop-blur-xl border border-white/5 p-10 rounded-[3rem] overflow-hidden hover:border-red-500/50 hover:bg-zinc-800/50 transition-all duration-500 shadow-2xl"
+        >
+          <div className="absolute -top-4 -right-4 p-8 opacity-[0.03] group-hover:opacity-10 group-hover:scale-110 transition-all duration-700">
+            <ShieldAlert size={160} />
           </div>
-          <Activity size={40} className="text-red-500 mb-6" />
-          <h2 className="text-2xl font-bold mb-2 uppercase tracking-tight">Monitor Mode</h2>
-          <p className="text-zinc-500 text-sm leading-relaxed">
-            หน้าจอสำหรับผู้ดูแล รับการแจ้งเตือนและสั่นเตือนเมื่อเกิดเหตุฉุกเฉิน
-          </p>
+
+          <div className="relative z-10">
+            <div className="w-14 h-14 bg-red-500/10 rounded-2xl flex items-center justify-center mb-8 border border-red-500/20 group-hover:bg-red-500 group-hover:text-white transition-colors">
+              <Activity size={28} />
+            </div>
+            <h2 className="text-3xl font-black mb-3 uppercase italic tracking-tighter">Command Unit</h2>
+            <p className="text-zinc-400 text-sm leading-relaxed font-medium">
+              ศูนย์ควบคุมหลัก รับการแจ้งเตือนพุช สั่น และไซเรนแบบเรียลไทม์ พร้อมบันทึกภาพหลักฐานเหตุการณ์
+            </p>
+            <div className="mt-8 flex items-center gap-2 text-[10px] font-black text-red-500 uppercase tracking-[0.2em]">
+              Access Control <ChevronRight size={14} className="group-hover:translate-x-1 transition-transform" />
+            </div>
+          </div>
         </Link>
       </div>
 
-      <footer className="mt-16 text-zinc-700 text-[10px] uppercase tracking-[0.4em] font-bold">
-        Connected via Firebase Realtime Database
+      <footer className="mt-20 flex flex-col items-center gap-4 z-10">
+        <div className="flex items-center gap-4 px-6 py-2 bg-white/5 rounded-full border border-white/5 backdrop-blur-md">
+          <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
+          <span className="text-[9px] font-black text-zinc-500 uppercase tracking-[0.3em]">Network: Firebase Realtime Database Secured</span>
+        </div>
       </footer>
     </div>
   );
