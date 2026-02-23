@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import FallDetector from '@/components/FallDetector';
 import { db } from '@/lib/firebase';
 import { ref, set, serverTimestamp } from "firebase/database";
-import { Cpu, ShieldCheck, RefreshCw } from 'lucide-react'; // เพิ่ม Icon สำหรับสลับกล้อง
+import { Cpu, ShieldCheck, RefreshCw } from 'lucide-react';
 
 export default function CameraPage() {
   const [isAlert, setIsAlert] = useState(false);
@@ -27,7 +27,7 @@ export default function CameraPage() {
 
     const now = Date.now();
     frameCount.current++;
-    
+
     if (now - lastFpsUpdate.current > 1000) {
       setFps(frameCount.current);
       frameCount.current = 0;
@@ -70,14 +70,14 @@ export default function CameraPage() {
   };
 
   useEffect(() => {
-    const interval = setInterval(streamLive, 100);
+    const interval = setInterval(streamLive, 200);
     return () => clearInterval(interval);
   }, []);
 
   return (
     <div className="min-h-screen bg-black text-white p-4 flex flex-col items-center justify-center font-sans">
       <div className="w-full max-w-5xl space-y-4">
-        
+
         {/* Header Bar */}
         <div className="flex items-center justify-between px-2">
            <div className="flex items-center gap-2">
@@ -94,7 +94,7 @@ export default function CameraPage() {
 
         {/* MAIN CAMERA VIEW */}
         <div className={`relative aspect-video rounded-3xl overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' : 'border-white/10'}`}>
-          
+
           {/* ส่ง facingMode ที่เปลี่ยนในหน้านี้ลงไปให้ FallDetector */}
           <FallDetector onFallDetected={handleFallDetected} facingMode={facingMode} />
 
@@ -106,7 +106,7 @@ export default function CameraPage() {
                </div>
 
                {/* ปุ่มสลับกล้อง (เปิดให้กดได้ด้วย pointer-events-auto) */}
-               <button 
+               <button
                 onClick={toggleCamera}
                 className="pointer-events-auto p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl"
                 title="Switch Camera"
