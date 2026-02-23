@@ -1,11 +1,12 @@
 "use client";
 import React, { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import { db } from '@/lib/firebase';
-import { ref, onValue, set, push, query, limitToLast, remove } from "firebase/database";
+import { ref, onValue, set, query, limitToLast, remove } from "firebase/database";
 import { useEmergency } from '@/hooks/useEmergency';
 import {
-  ShieldAlert, Activity, Eye, Clock, History,
-  TrendingUp, Trash2, AlertTriangle, PhoneCall, MessageSquare
+  ShieldAlert, Activity, Clock, History,
+  Trash2, Home
 } from 'lucide-react';
 
 export default function MonitorPage() {
@@ -23,13 +24,11 @@ export default function MonitorPage() {
   useEffect(() => {
     requestPermission();
 
-    // เช็คสถานะการเชื่อมต่อทุก 3 วินาที
     const timer = setInterval(() => {
-      setIsOffline(Date.now() - lastUpdate > 7000);
+      setIsOffline(Date.now() - lastUpdate > 8000);
     }, 3000);
 
-    const liveRef = ref(db, 'system/live_stream');
-    const unsubscribeLive = onValue(liveRef, (s) => {
+    const unsubscribeLive = onValue(ref(db, 'system/live_stream'), (s) => {
       const data = s.val();
       if (data?.frame) {
         setLiveFrame(data.frame);
@@ -38,18 +37,15 @@ export default function MonitorPage() {
       }
     });
 
-    const eventRef = ref(db, 'system/fall_event');
-    const unsubscribeEvent = onValue(eventRef, (s) => {
+    const unsubscribeEvent = onValue(ref(db, 'system/fall_event'), (s) => {
       const data = s.val();
       const detected = !!data?.detected;
-
       if (detected) {
         setIsEmergency(true);
         setEvidence(data.evidence);
         setFallTime(data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : "N/A");
-
         if (!prevEmergencyRef.current) {
-          triggerAlarm(`🚨 EMERGENCY: Fall detected at ${new Date().toLocaleTimeString()}`);
+          triggerAlarm(`🚨 EMERGENCY: Fall detected!`);
         }
       } else {
         setIsEmergency(false);
@@ -58,8 +54,8 @@ export default function MonitorPage() {
       prevEmergencyRef.current = detected;
     });
 
-    const historyRef = query(ref(db, 'history/falls'), limitToLast(20));
-    const unsubscribeHistory = onValue(historyRef, (s) => {
+    const historyQuery = query(ref(db, 'history/falls'), limitToLast(20));
+    const unsubscribeHistory = onValue(historyQuery, (s) => {
       const data = s.val();
       if (data) {
         setHistory(Object.entries(data).map(([id, value]: [string, any]) => ({ id, ...value })).reverse());
@@ -75,20 +71,11 @@ export default function MonitorPage() {
 
   const handleReset = async () => {
     stopAlarm();
-    if (evidence) {
-      try {
-        await set(push(ref(db, 'history/falls')), {
-          evidence,
-          timestamp: Date.now(),
-          timeStr: fallTime
-        });
-      } catch (err) { console.error(err); }
-    }
     await set(ref(db, 'system/fall_event'), { detected: false, evidence: null });
   };
 
   const handleDeleteHistory = async (id: string) => {
-    if (window.confirm("Delete record?")) {
+    if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) {
       await remove(ref(db, `history/falls/${id}`));
     }
   };
@@ -98,12 +85,17 @@ export default function MonitorPage() {
       <header className="border-b border-white/5 bg-black/40 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-4">
-            <div className={`p-2.5 rounded-2xl transition-all ${isEmergency ? 'bg-red-600 shadow-lg' : 'bg-blue-600 shadow-md'}`}>
+            <Link href="/">
+              <button className="p-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-2xl border border-white/5 transition-all">
+                <Home size={20} className="text-zinc-400" />
+              </button>
+            </Link>
+            <div className={`p-2.5 rounded-2xl ${isEmergency ? 'bg-red-600 animate-pulse shadow-lg shadow-red-600/20' : 'bg-blue-600 shadow-md'}`}>
               <ShieldAlert size={22} className="text-white" />
             </div>
             <div>
-              <h1 className="font-black uppercase tracking-tighter text-xl italic">Guard Vision</h1>
-              <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Protocol Stable</p>
+              <h1 className="font-black uppercase tracking-tighter text-xl italic">Monitor Hub</h1>
+              <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest leading-none">AI Surveillance</p>
             </div>
           </div>
           <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black border ${isOffline ? 'border-red-500 text-red-500 bg-red-500/5' : 'border-green-500 text-green-500 bg-green-500/5'}`}>
@@ -119,25 +111,25 @@ export default function MonitorPage() {
             <section className="bg-red-600 rounded-[2.5rem] p-4 flex flex-col md:flex-row items-center gap-6 animate-in slide-in-from-top-4 duration-500 shadow-2xl">
               <img src={evidence || ""} className="w-full md:w-48 aspect-square rounded-[1.5rem] object-cover border-2 border-white/20" alt="Evidence" />
               <div className="flex-1 text-center md:text-left">
-                <h2 className="text-2xl font-black text-white uppercase italic">Fall Detected</h2>
-                <p className="text-white/80 font-bold text-xs uppercase">Time: {fallTime}</p>
-                <button onClick={handleReset} className="mt-4 bg-white text-red-600 px-8 py-3 rounded-xl font-black uppercase text-xs hover:scale-105 transition-all">Resolve Incident</button>
+                <h2 className="text-2xl font-black text-white uppercase italic tracking-tighter text-ellipsis overflow-hidden">Fall Event Detected</h2>
+                <p className="text-white/80 font-bold text-xs uppercase tracking-widest">Time: {fallTime}</p>
+                <button onClick={handleReset} className="mt-4 bg-white text-red-600 px-8 py-3 rounded-xl font-black uppercase text-xs hover:scale-105 transition-all">Resolve Alert</button>
               </div>
             </section>
           )}
 
-          <section className="relative aspect-video bg-zinc-900 rounded-[3rem] overflow-hidden border border-white/5 shadow-2xl group">
+          <section className="relative aspect-video bg-zinc-900 rounded-[3rem] overflow-hidden border border-white/5 shadow-2xl">
             {liveFrame && !isOffline ? (
-              <img src={liveFrame} className="w-full h-full object-cover transition-opacity duration-300" alt="Live Feed" />
+              <img src={liveFrame} className="w-full h-full object-cover" alt="Live Feed" />
             ) : (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700">
                 <Activity className="animate-pulse mb-4" size={48} />
-                <p className="text-[10px] font-black uppercase tracking-widest">Awaiting Signal...</p>
+                <p className="text-[10px] font-black uppercase tracking-[0.5em]">Searching for Signal</p>
               </div>
             )}
             <div className="absolute top-8 left-8 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-xl border border-white/10 flex items-center gap-2">
               <div className={`w-1.5 h-1.5 rounded-full ${isOffline ? 'bg-zinc-600' : 'bg-red-500 animate-pulse'}`} />
-              <span className="text-[9px] font-bold uppercase text-white tracking-widest">Channel_01</span>
+              <span className="text-[9px] font-bold uppercase text-white tracking-widest italic">Stream Active</span>
             </div>
           </section>
         </div>
@@ -148,17 +140,22 @@ export default function MonitorPage() {
               <History size={14} /> Incident Logs
             </h3>
             <div className="flex-1 space-y-3 overflow-y-auto pr-2 custom-scrollbar">
-              {history.map((item) => (
+              {history.length > 0 ? history.map((item) => (
                 <div key={item.id} className="group flex items-center gap-4 p-3 bg-white/[0.03] rounded-2xl border border-white/5 hover:bg-white/[0.06] transition-all">
-                  <img src={item.evidence} className="w-12 h-12 rounded-lg object-cover grayscale group-hover:grayscale-0" />
+                  <img src={item.evidence} className="w-14 h-14 rounded-lg object-cover grayscale group-hover:grayscale-0 transition-all" />
                   <div className="flex-1">
-                    <p className="text-[10px] font-bold text-zinc-400">{item.timeStr}</p>
+                    <p className="text-[10px] font-bold text-zinc-400 italic">{item.timeStr}</p>
+                    <p className="text-[8px] font-black text-blue-500/50 uppercase tracking-widest">Logged</p>
                   </div>
                   <button onClick={() => handleDeleteHistory(item.id)} className="p-2 text-zinc-600 hover:text-red-500 transition-colors">
-                    <Trash2 size={14} />
+                    <Trash2 size={16} />
                   </button>
                 </div>
-              ))}
+              )) : (
+                <div className="h-full flex flex-col items-center justify-center opacity-10">
+                  <History size={40} />
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -166,7 +163,7 @@ export default function MonitorPage() {
 
       <style jsx global>{`
         .custom-scrollbar::-webkit-scrollbar { width: 3px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #222; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
       `}</style>
     </div>
   );

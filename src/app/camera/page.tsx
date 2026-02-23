@@ -1,9 +1,10 @@
 "use client";
 import React, { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import FallDetector from '@/components/FallDetector';
 import { db } from '@/lib/firebase';
-import { ref, set, serverTimestamp } from "firebase/database";
-import { Cpu, ShieldCheck, RefreshCw } from 'lucide-react';
+import { ref, set, push, serverTimestamp } from "firebase/database";
+import { Cpu, ShieldCheck, RefreshCw, Home } from 'lucide-react';
 
 export default function CameraPage() {
   const [isAlert, setIsAlert] = useState(false);
@@ -14,8 +15,6 @@ export default function CameraPage() {
   const lastFpsUpdate = useRef(0);
   const lastStreamTime = useRef(0);
   const isUploading = useRef(false);
-
-  // สร้าง Offscreen Canvas สำหรับย่อภาพเพื่อส่ง Stream (ช่วยให้ Monitor ลื่นขึ้นมาก)
   const streamCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const toggleCamera = () => {
@@ -35,30 +34,24 @@ export default function CameraPage() {
       lastFpsUpdate.current = now;
     }
 
-    // ส่งภาพทุกๆ 250ms (4 FPS) เพื่อความเสถียรของ Network
     if (now - lastStreamTime.current > 250) {
       isUploading.current = true;
       try {
         if (!streamCanvasRef.current) {
           streamCanvasRef.current = document.createElement('canvas');
         }
-
         const sCanvas = streamCanvasRef.current;
         const sCtx = sCanvas.getContext('2d');
-
-        // ย่อภาพเหลือ 320px สำหรับส่ง Live (ประหยัด Bandwidth 4 เท่า)
         sCanvas.width = 320;
         sCanvas.height = 320;
         sCtx?.drawImage(mainCanvas, 0, 0, 320, 320);
-
-        const frame = sCanvas.toDataURL('image/jpeg', 0.4); // เพิ่มคุณภาพเล็กน้อยเป็น 0.4
+        const frame = sCanvas.toDataURL('image/jpeg', 0.4);
 
         await set(ref(db, 'system/live_stream'), {
           frame,
           lastActive: serverTimestamp(),
           fps: frameCount.current
         });
-
         lastStreamTime.current = now;
       } catch (error) {
         console.error("Stream Error:", error);
@@ -73,8 +66,7 @@ export default function CameraPage() {
     setIsAlert(true);
 
     const mainCanvas = document.querySelector('canvas') as HTMLCanvasElement;
-    // ภาพหลักฐานใช้คุณภาพสูง (0.7)
-    const evidence = mainCanvas ? mainCanvas.toDataURL('image/jpeg', 0.7) : null;
+    const evidence = mainCanvas ? mainCanvas.toDataURL('image/jpeg', 0.6) : null;
 
     try {
       await set(ref(db, 'system/fall_event'), {
@@ -82,10 +74,19 @@ export default function CameraPage() {
         evidence,
         timestamp: serverTimestamp(),
       });
-    } catch (error) { console.error("Alert Error:", error); }
 
-    // หน่วงเวลา Reset Alert 8 วินาที เพื่อให้ Monitor ทำงานทัน
-    setTimeout(() => setIsAlert(false), 8000);
+      const historyRef = ref(db, 'history/falls');
+      const newHistoryEntry = push(historyRef);
+      await set(newHistoryEntry, {
+        evidence,
+        timestamp: serverTimestamp(),
+        timeStr: new Date().toLocaleTimeString('th-TH'),
+      });
+    } catch (error) {
+      console.error("🚨 Firebase Save Error:", error);
+    }
+
+    setTimeout(() => setIsAlert(false), 10000);
   };
 
   useEffect(() => {
@@ -100,7 +101,7 @@ export default function CameraPage() {
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full animate-pulse ${isAlert ? 'bg-red-500' : 'bg-blue-500'}`} />
             <h1 className="text-xs font-bold tracking-widest uppercase opacity-70">
-              {facingMode === 'user' ? 'Front Cam' : 'Rear Cam'} Live
+              {facingMode === 'user' ? 'Front' : 'Rear'} Cam Stable
             </h1>
           </div>
           <div className="text-[10px] font-mono opacity-40 uppercase tracking-widest">
@@ -108,7 +109,7 @@ export default function CameraPage() {
           </div>
         </div>
 
-        <div className={`relative aspect-video rounded-3xl overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' : 'border-white/10'}`}>
+        <div className={`relative aspect-video rounded-[2.5rem] overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' : 'border-white/10'}`}>
           <FallDetector onFallDetected={handleFallDetected} facingMode={facingMode} />
 
           <div className="absolute inset-0 pointer-events-none p-6 flex flex-col justify-between">
@@ -116,17 +117,26 @@ export default function CameraPage() {
               <div className="bg-black/50 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 text-[10px] font-bold">
                 {isAlert ? '● EMERGENCY' : '● LIVE'}
               </div>
-              <button onClick={toggleCamera} className="pointer-events-auto p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
-                <RefreshCw size={20} className="text-white" />
-              </button>
+
+              <div className="flex gap-2 pointer-events-auto">
+                <Link href="/">
+                  <button className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
+                    <Home size={20} />
+                  </button>
+                </Link>
+                <button onClick={toggleCamera} className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
+                  <RefreshCw size={20} />
+                </button>
+              </div>
             </div>
+
             <div className="flex justify-between items-end">
               <div className="space-y-1">
                 <div className="flex items-center gap-2 text-blue-400">
                   <Cpu size={12} />
-                  <span className="text-[10px] font-black uppercase tracking-tighter">AI_ENGINE_V2_STABLE</span>
+                  <span className="text-[10px] font-black uppercase tracking-tighter">AI_GUARD_V2</span>
                 </div>
-                <p className="text-[10px] font-mono opacity-70 text-zinc-400 uppercase tracking-widest">Status: Nominal</p>
+                <p className="text-[10px] font-mono opacity-70 text-zinc-400 uppercase tracking-widest">Status: Ready</p>
               </div>
             </div>
           </div>
@@ -143,10 +153,10 @@ export default function CameraPage() {
         <div className="flex justify-between items-center px-4 py-3 bg-zinc-900/50 rounded-2xl border border-white/5">
           <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest">
             <ShieldCheck size={14} className="text-blue-500" />
-            End-to-End Encryption
+            Security Protocol Active
           </div>
-          <div className="text-[10px] font-bold text-zinc-500 font-mono">
-            {new Date().toLocaleTimeString('en-GB', { hour12: false })}
+          <div className="text-[10px] font-bold text-zinc-500 font-mono italic">
+            {new Date().toLocaleTimeString('en-GB')}
           </div>
         </div>
       </div>
