@@ -1,46 +1,33 @@
 "use client";
-
-import React, { useState, useEffect, useRef } from "react";
-import FallDetector from "@/components/FallDetector";
-import { db } from "@/lib/firebase";
+import React, { useState, useEffect, useRef } from 'react';
+import FallDetector from '@/components/FallDetector';
+import { db } from '@/lib/firebase';
 import { ref, set, serverTimestamp } from "firebase/database";
-import { Radio, ShieldCheck, Cpu, Camera } from "lucide-react";
+import { Cpu, ShieldCheck, RefreshCw } from 'lucide-react'; // เพิ่ม Icon สำหรับสลับกล้อง
 
 export default function CameraPage() {
   const [isAlert, setIsAlert] = useState(false);
   const [fps, setFps] = useState(0);
-  const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
+  // เพิ่ม State สำหรับจัดการการสลับกล้อง
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
 
   const lastStreamTime = useRef(0);
   const frameCount = useRef(0);
   const lastFpsUpdate = useRef(0);
-  const wakeLock = useRef<any>(null);
   const isUploading = useRef(false);
 
-  // Wake Lock
-  useEffect(() => {
-    const requestWakeLock = async () => {
-      try {
-        if ("wakeLock" in navigator) {
-          wakeLock.current = await (navigator as any).wakeLock.request("screen");
-        }
-      } catch (err) {
-        console.error("Wake Lock Error:", err);
-      }
-    };
+  // ฟังก์ชันสลับกล้อง
+  const toggleCamera = () => {
+    setFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
+  };
 
-    requestWakeLock();
-    return () => wakeLock.current?.release();
-  }, []);
-
-  // Stream + FPS
   const streamLive = async () => {
-    const canvas = document.querySelector("canvas") as HTMLCanvasElement;
+    const canvas = document.querySelector('canvas') as HTMLCanvasElement;
     if (!canvas) return;
 
     const now = Date.now();
-
     frameCount.current++;
+    
     if (now - lastFpsUpdate.current > 1000) {
       setFps(frameCount.current);
       frameCount.current = 0;
@@ -50,17 +37,15 @@ export default function CameraPage() {
     if (now - lastStreamTime.current > 1000 && !isUploading.current) {
       isUploading.current = true;
       try {
-        const frame = canvas.toDataURL("image/jpeg", 0.1);
-
-        await set(ref(db, "system/live_stream"), {
+        const frame = canvas.toDataURL('image/jpeg', 0.1);
+        await set(ref(db, 'system/live_stream'), {
           frame,
           lastActive: serverTimestamp(),
-          fps: frameCount.current,
+          fps: frameCount.current
         });
-
         lastStreamTime.current = now;
       } catch (error) {
-        console.error("Stream Upload Error:", error);
+        console.error("Stream Error:", error);
       } finally {
         isUploading.current = false;
       }
@@ -70,15 +55,16 @@ export default function CameraPage() {
   const handleFallDetected = async () => {
     if (isAlert) return;
     setIsAlert(true);
+    const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+    const evidence = canvas ? canvas.toDataURL('image/jpeg', 0.5) : null;
 
-    const canvas = document.querySelector("canvas") as HTMLCanvasElement;
-    const evidence = canvas ? canvas.toDataURL("image/jpeg", 0.5) : null;
-
-    await set(ref(db, "system/fall_event"), {
-      detected: true,
-      evidence,
-      timestamp: serverTimestamp(),
-    });
+    try {
+      await set(ref(db, 'system/fall_event'), {
+        detected: true,
+        evidence,
+        timestamp: serverTimestamp(),
+      });
+    } catch (error) { console.error("Alert Error:", error); }
 
     setTimeout(() => setIsAlert(false), 5000);
   };
@@ -88,69 +74,80 @@ export default function CameraPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const toggleCamera = () => {
-    setFacingMode((prev) =>
-      prev === "environment" ? "user" : "environment"
-    );
-  };
-
   return (
-    <div className="min-h-screen bg-[#050505] text-zinc-100 px-4 md:px-8 py-8">
-
-      {/* Top Bar */}
-      <div className="max-w-6xl mx-auto mb-6 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <Radio className={isAlert ? "text-red-500" : "text-blue-500"} />
-          <span className="text-sm uppercase tracking-widest">
-            {isAlert ? "EMERGENCY" : "LIVE"}
-          </span>
+    <div className="min-h-screen bg-black text-white p-4 flex flex-col items-center justify-center font-sans">
+      <div className="w-full max-w-5xl space-y-4">
+        
+        {/* Header Bar */}
+        <div className="flex items-center justify-between px-2">
+           <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full animate-pulse ${isAlert ? 'bg-red-500' : 'bg-blue-500'}`} />
+              <h1 className="text-xs font-bold tracking-widest uppercase opacity-70">
+                {facingMode === 'user' ? 'Front Cam' : 'Rear Cam'} Live
+              </h1>
+           </div>
+           {/* แสดง FPS ปัจจุบันแบบจางๆ */}
+           <div className="text-[10px] font-mono opacity-40 uppercase tracking-widest">
+             Stream Rate: {fps}Hz
+           </div>
         </div>
 
-      </div>
+        {/* MAIN CAMERA VIEW */}
+        <div className={`relative aspect-video rounded-3xl overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' : 'border-white/10'}`}>
+          
+          {/* ส่ง facingMode ที่เปลี่ยนในหน้านี้ลงไปให้ FallDetector */}
+          <FallDetector onFallDetected={handleFallDetected} facingMode={facingMode} />
 
-      {/* Camera Box */}
-      <div className="max-w-6xl mx-auto flex justify-center">
-        <div
-          className={`relative w-full max-w-5xl aspect-video max-h-[80vh]
-          rounded-[2.5rem] overflow-hidden
-          border transition-all duration-500
-          bg-zinc-950 shadow-2xl
-          ${isAlert ? "border-red-500" : "border-white/10"}`}
-        >
-          <FallDetector
-            onFallDetected={handleFallDetected}
-            facingMode={facingMode}
-          />
+          {/* HUD Overlay */}
+          <div className="absolute inset-0 pointer-events-none p-6 flex flex-col justify-between">
+            <div className="flex justify-between items-start">
+               <div className="bg-black/50 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 text-[10px] font-bold">
+                 {isAlert ? '● EMERGENCY' : '● LIVE'}
+               </div>
 
-          <div className="absolute bottom-6 left-6 text-xs tracking-widest text-white space-y-1">
-            <div className="flex items-center gap-2 text-blue-400">
-              <Cpu size={14} />
-              ONNX_WASM_V2
+               {/* ปุ่มสลับกล้อง (เปิดให้กดได้ด้วย pointer-events-auto) */}
+               <button 
+                onClick={toggleCamera}
+                className="pointer-events-auto p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl"
+                title="Switch Camera"
+               >
+                 <RefreshCw size={20} className="text-white" />
+               </button>
             </div>
-            <div>FPS: {fps}</div>
+
+            <div className="flex justify-between items-end">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-blue-400">
+                  <Cpu size={12} />
+                  <span className="text-[10px] font-black uppercase tracking-tighter">AI_ENGINE_V2</span>
+                </div>
+                <p className="text-[10px] font-mono opacity-70 text-zinc-400 uppercase tracking-widest">Status: Nominal</p>
+              </div>
+            </div>
           </div>
 
+          {/* Alert Overlay */}
           {isAlert && (
-            <div className="absolute inset-0 bg-red-600/20 flex items-center justify-center">
-              <div className="bg-red-600 text-white px-12 py-6 text-4xl font-black rounded-2xl animate-pulse">
+            <div className="absolute inset-0 bg-red-600/20 backdrop-blur-sm flex items-center justify-center">
+              <div className="bg-red-600 text-white px-8 py-3 rounded-2xl font-black text-2xl italic uppercase animate-bounce shadow-2xl border-2 border-white/20">
                 FALL DETECTED
               </div>
             </div>
           )}
         </div>
-      </div>
 
-      {/* Footer */}
-      <div className="max-w-6xl mx-auto mt-6 flex justify-between px-4 py-2 bg-zinc-900/30 rounded-full border border-white/5 text-xs uppercase tracking-widest text-zinc-500">
-        <div className="flex items-center gap-2">
-          <ShieldCheck size={14} className="text-blue-500" />
-          End-to-End Encryption Active
+        {/* Bottom Status Panel */}
+        <div className="flex justify-between items-center px-4 py-3 bg-zinc-900/50 rounded-2xl border border-white/5">
+          <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest">
+            <ShieldCheck size={14} className="text-blue-500" />
+            End-to-End Encryption
+          </div>
+          <div className="text-[10px] font-bold text-zinc-500 font-mono">
+            {new Date().toLocaleTimeString('en-GB', { hour12: false })}
+          </div>
         </div>
-        <div suppressHydrationWarning>
-          Live: {new Date().toLocaleTimeString()}
-        </div>
-      </div>
 
+      </div>
     </div>
   );
 }

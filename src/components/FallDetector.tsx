@@ -1,224 +1,170 @@
 "use client";
+import React, { useEffect, useRef, useState } from 'react';
+import * as ort from 'onnxruntime-web';
 
-import React, { useEffect, useRef, useState } from "react";
-import * as ort from "onnxruntime-web";
-import { RefreshCw, Loader2 } from "lucide-react";
-
-ort.env.wasm.wasmPaths =
-  "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+// 1. ตั้งค่า Path สำหรับไฟล์ WASM
+ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+ort.env.logLevel = 'error';
 
 interface FallDetectorProps {
   onFallDetected: () => void;
-  sensitivity?: number;
-  facingMode: "user" | "environment";
-  onToggleCamera?: () => void;
+  facingMode?: 'user' | 'environment'; // เพิ่มตรงนี้
 }
 
-export default function FallDetector({
-  onFallDetected,
-  sensitivity = 0.65,
-  facingMode,
-  onToggleCamera,
-}: FallDetectorProps) {
+export default function FallDetector({ onFallDetected, facingMode = 'environment' }: FallDetectorProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sessionRef = useRef<ort.InferenceSession | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const isProcessing = useRef(false);
-  const fallCounter = useRef(0);
+  const requestRef = useRef<number | undefined>(undefined);
 
   const [loading, setLoading] = useState(true);
-  const [cameraName, setCameraName] = useState("Initializing...");
+  const [cameraName, setCameraName] = useState<string>("กำลังค้นหากล้อง...");
   const [error, setError] = useState<string | null>(null);
 
-  // ---------------- AI INIT ----------------
+  // โหลด Model AI ครั้งเดียว
   useEffect(() => {
     const initAI = async () => {
       try {
-        const sess = await ort.InferenceSession.create("/model/best.onnx", {
-          executionProviders: ["wasm"],
-          graphOptimizationLevel: "all",
+        const sess = await ort.InferenceSession.create('/model/best.onnx', {
+          executionProviders: ['wasm'],
         });
         sessionRef.current = sess;
         setLoading(false);
       } catch (e) {
         console.error("AI Initialization Error:", e);
-        setError("AI Load Failed");
+        setError("ไม่สามารถโหลดระบบ AI ได้");
       }
     };
-
     initAI();
+    return () => stopCamera();
   }, []);
 
-  // ---------------- CAMERA START ----------------
+  // เมื่อโหมดกล้องเปลี่ยน ให้ปิดตัวเก่าแล้วเริ่มใหม่
   useEffect(() => {
-    if (!sessionRef.current) return;
+    if (!loading) {
+      startCamera();
+    }
+  }, [facingMode, loading]);
 
-    const startCamera = async () => {
-      try {
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((t) => t.stop());
+  const stopCamera = () => {
+    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+    }
+  };
+
+  const startCamera = async () => {
+    try {
+      stopCamera(); // ล้าง Stream เดิมก่อน
+
+      // ดึงรายชื่ออุปกรณ์เพื่อหา GoPro (ถ้าโหมดเป็น environment)
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      
+      let constraints: MediaStreamConstraints = {
+        video: {
+          facingMode: facingMode,
+          width: { ideal: 640 },
+          height: { ideal: 640 },
+          aspectRatio: 1
         }
+      };
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode,
-            width: { ideal: 640 },
-            height: { ideal: 640 },
-          },
-          audio: false,
-        });
-
-        streamRef.current = stream;
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play();
-            requestAnimationFrame(detectFrame);
+      // ถ้าเป็นกล้องหลัง และมี GoPro ให้เลือก GoPro ก่อน
+      if (facingMode === 'environment') {
+        const gopro = videoDevices.find(d => d.label.toLowerCase().includes('gopro'));
+        if (gopro) {
+          constraints = {
+            video: {
+              deviceId: { exact: gopro.deviceId },
+              width: { ideal: 640 },
+              height: { ideal: 640 },
+              aspectRatio: 1
+            }
           };
         }
-
-        setCameraName(
-          facingMode === "user" ? "Front Camera" : "Main Camera"
-        );
-      } catch (err) {
-        console.error("Camera Error:", err);
-        setError("Camera Access Denied");
       }
-    };
 
-    startCamera();
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      setCameraName(stream.getVideoTracks()[0].label || "Active Camera");
 
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play();
+          requestRef.current = requestAnimationFrame(detect);
+        };
       }
-    };
-  }, [facingMode]);
+    } catch (err) {
+      console.error("Camera Access Error:", err);
+      setError("ไม่สามารถเข้าถึงกล้องได้");
+    }
+  };
 
-  // ---------------- DETECTION LOOP ----------------
-  const detectFrame = async () => {
-    if (
-      !videoRef.current ||
-      !sessionRef.current ||
-      !canvasRef.current ||
-      isProcessing.current
-    ) {
-      requestAnimationFrame(detectFrame);
+  const detect = async () => {
+    if (!videoRef.current || !sessionRef.current || !canvasRef.current || videoRef.current.paused) {
+      requestRef.current = requestAnimationFrame(detect);
       return;
     }
 
-    isProcessing.current = true;
-    const ctx = canvasRef.current.getContext("2d");
+    const ctx = canvasRef.current.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
     ctx.drawImage(videoRef.current, 0, 0, 640, 640);
+    const imgData = ctx.getImageData(0, 0, 640, 640).data;
 
-    const imgData = ctx.getImageData(0, 0, 640, 640);
     const input = new Float32Array(3 * 640 * 640);
-
     for (let i = 0; i < 640 * 640; i++) {
-      input[i] = imgData.data[i * 4] / 255;
-      input[i + 409600] = imgData.data[i * 4 + 1] / 255;
-      input[i + 819200] = imgData.data[i * 4 + 2] / 255;
+      input[i] = imgData[i * 4] / 255;
+      input[i + 640 * 640] = imgData[i * 4 + 1] / 255;
+      input[i + 2 * 640 * 640] = imgData[i * 4 + 2] / 255;
     }
 
     try {
-      const tensor = new ort.Tensor("float32", input, [1, 3, 640, 640]);
-      const output = await sessionRef.current.run({ images: tensor });
+      const inputTensor = new ort.Tensor('float32', input, [1, 3, 640, 640]);
+      const output = await sessionRef.current.run({ images: inputTensor });
       const data = output.output0.data as Float32Array;
 
-      let maxConf = 0;
-      let bestBox = null;
-
+      let foundFall = false;
       for (let i = 0; i < 8400; i++) {
-        const conf = data[4 * 8400 + i];
-        if (conf > sensitivity && conf > maxConf) {
-          maxConf = conf;
-          bestBox = {
-            x: data[0 * 8400 + i],
-            y: data[1 * 8400 + i],
-            w: data[2 * 8400 + i],
-            h: data[3 * 8400 + i],
-          };
+        if (data[4 * 8400 + i] > 0.65) {
+          const x = data[0 * 8400 + i], y = data[1 * 8400 + i];
+          const w = data[2 * 8400 + i], h = data[3 * 8400 + i];
+          ctx.strokeStyle = "#FF3131";
+          ctx.lineWidth = 6;
+          ctx.strokeRect(x - w / 2, y - h / 2, w, h);
+          foundFall = true;
         }
       }
+      if (foundFall) onFallDetected();
+    } catch (e) {}
 
-      if (bestBox) {
-        const { x, y, w, h } = bestBox;
-
-        ctx.strokeStyle = "#FF3131";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(x - w / 2, y - h / 2, w, h);
-
-        fallCounter.current++;
-
-        if (fallCounter.current >= 3) {
-          onFallDetected();
-        }
-      } else {
-        fallCounter.current = Math.max(0, fallCounter.current - 1);
-      }
-    } catch (e) {
-      console.error("Inference Error:", e);
-    }
-
-    isProcessing.current = false;
-    requestAnimationFrame(detectFrame);
+    requestRef.current = requestAnimationFrame(detect);
   };
 
-  // ---------------- UI ----------------
   return (
     <div className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden rounded-[2rem]">
       <video ref={videoRef} playsInline muted className="hidden" />
-      <canvas
-        ref={canvasRef}
-        width={640}
-        height={640}
-        className="w-full h-full object-contain"
-      />
-
-      {loading && (
-        <div className="absolute inset-0 bg-zinc-950 flex flex-col items-center justify-center gap-4">
-          <Loader2 className="text-blue-500 animate-spin" size={40} />
-          <p className="text-blue-500 font-bold tracking-widest text-xs uppercase">
-            Loading AI Model...
-          </p>
+      <canvas ref={canvasRef} width={640} height={640} className="w-full h-full object-contain" />
+      
+      {!loading && !error && (
+        <div className="absolute top-6 left-6 flex items-center gap-2 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+          <p className="text-[11px] text-white font-medium uppercase tracking-wider">{cameraName}</p>
         </div>
       )}
 
-      {!loading && (
-        <div className="absolute top-6 left-6 right-6 flex justify-between items-center">
-          <div className="flex items-center gap-2 bg-black/60 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10">
-            <div
-              className={`w-2 h-2 rounded-full ${
-                fallCounter.current > 0
-                  ? "bg-red-500 animate-ping"
-                  : "bg-green-500"
-              }`}
-            />
-            <p className="text-[10px] text-white font-black uppercase tracking-widest">
-              {cameraName}
-            </p>
-          </div>
-
-          {onToggleCamera && (
-            <button
-              onClick={onToggleCamera}
-              className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-xl rounded-2xl border border-white/10 text-white transition active:scale-90"
-            >
-              <RefreshCw size={18} />
-            </button>
-          )}
+      {loading && (
+        <div className="absolute inset-0 bg-zinc-950 flex flex-col items-center justify-center z-10">
+          <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-blue-500 font-bold animate-pulse uppercase tracking-[0.3em] text-xs">AI Initializing...</p>
         </div>
       )}
 
       {error && (
-        <div className="absolute inset-0 bg-red-500/20 backdrop-blur-md flex items-center justify-center">
-          <p className="bg-red-600 text-white px-6 py-2 rounded-full font-bold">
-            {error}
-          </p>
+        <div className="absolute inset-0 bg-zinc-950 flex flex-col items-center justify-center z-10 p-6 text-center">
+          <p className="text-red-500 font-bold mb-2 uppercase tracking-widest text-xs">{error}</p>
         </div>
       )}
     </div>
