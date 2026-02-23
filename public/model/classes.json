@@ -1,4 +1,1 @@
-[
-    "Fall Detected",
-    "No - Fall Detected"
-]
+["Falling", "Sitting", "Sleeping", "Standing"]
