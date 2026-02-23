@@ -8,7 +8,7 @@ ort.env.logLevel = 'error';
 
 interface FallDetectorProps {
   onFallDetected: () => void;
-  facingMode?: 'user' | 'environment'; // เพิ่มตรงนี้
+  facingMode?: 'user' | 'environment';
 }
 
 export default function FallDetector({ onFallDetected, facingMode = 'environment' }: FallDetectorProps) {
@@ -17,11 +17,13 @@ export default function FallDetector({ onFallDetected, facingMode = 'environment
   const sessionRef = useRef<ort.InferenceSession | null>(null);
   const requestRef = useRef<number | undefined>(undefined);
 
+  // เพิ่ม Ref สำหรับนับเฟรมสะสมเพื่อให้ตรวจจับได้เสถียรขึ้น
+  const fallCounter = useRef(0);
   const [loading, setLoading] = useState(true);
   const [cameraName, setCameraName] = useState<string>("กำลังค้นหากล้อง...");
   const [error, setError] = useState<string | null>(null);
 
-  // โหลด Model AI ครั้งเดียว
+  // โหลด Model AI
   useEffect(() => {
     const initAI = async () => {
       try {
@@ -39,7 +41,6 @@ export default function FallDetector({ onFallDetected, facingMode = 'environment
     return () => stopCamera();
   }, []);
 
-  // เมื่อโหมดกล้องเปลี่ยน ให้ปิดตัวเก่าแล้วเริ่มใหม่
   useEffect(() => {
     if (!loading) {
       startCamera();
@@ -56,12 +57,10 @@ export default function FallDetector({ onFallDetected, facingMode = 'environment
 
   const startCamera = async () => {
     try {
-      stopCamera(); // ล้าง Stream เดิมก่อน
-
-      // ดึงรายชื่ออุปกรณ์เพื่อหา GoPro (ถ้าโหมดเป็น environment)
+      stopCamera();
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter(device => device.kind === 'videoinput');
-      
+
       let constraints: MediaStreamConstraints = {
         video: {
           facingMode: facingMode,
@@ -71,7 +70,6 @@ export default function FallDetector({ onFallDetected, facingMode = 'environment
         }
       };
 
-      // ถ้าเป็นกล้องหลัง และมี GoPro ให้เลือก GoPro ก่อน
       if (facingMode === 'environment') {
         const gopro = videoDevices.find(d => d.label.toLowerCase().includes('gopro'));
         if (gopro) {
@@ -126,19 +124,40 @@ export default function FallDetector({ onFallDetected, facingMode = 'environment
       const output = await sessionRef.current.run({ images: inputTensor });
       const data = output.output0.data as Float32Array;
 
-      let foundFall = false;
+      let foundFallInFrame = false;
+
+      // ลำดับคลาส: 4: Falling, 5: Sitting, 6: Sleeping, 7: Standing
       for (let i = 0; i < 8400; i++) {
-        if (data[4 * 8400 + i] > 0.65) {
-          const x = data[0 * 8400 + i], y = data[1 * 8400 + i];
-          const w = data[2 * 8400 + i], h = data[3 * 8400 + i];
+        // ใช้คลาส Falling (Index 4) และปรับความมั่นใจเป็น 0.7 เพื่อลด Error
+        if (data[4 * 8400 + i] > 0.70) {
+          const x = data[0 * 8400 + i];
+          const y = data[1 * 8400 + i];
+          const w = data[2 * 8400 + i];
+          const h = data[3 * 8400 + i];
+
           ctx.strokeStyle = "#FF3131";
           ctx.lineWidth = 6;
           ctx.strokeRect(x - w / 2, y - h / 2, w, h);
-          foundFall = true;
+          foundFallInFrame = true;
+          break; // พบ 1 จุดที่มั่นใจในเฟรมนี้ก็ถือว่าพบแล้ว
         }
       }
-      if (foundFall) onFallDetected();
-    } catch (e) {}
+
+      // ระบบหน่วงเวลาเฟรม (Temporal Filtering)
+      if (foundFallInFrame) {
+        fallCounter.current += 1;
+        // ต้องตรวจเจออย่างน้อย 5 เฟรมติดต่อกันถึงจะส่งสัญญานเตือน (ประมาณ 0.5 - 1 วินาที)
+        if (fallCounter.current >= 5) {
+          onFallDetected();
+        }
+      } else {
+        // ถ้าไม่เจอ ให้ค่อยๆ ลดค่าลงเพื่อความนุ่มนวล
+        fallCounter.current = Math.max(0, fallCounter.current - 1);
+      }
+
+    } catch (e) {
+      console.error("Inference Error:", e);
+    }
 
     requestRef.current = requestAnimationFrame(detect);
   };
@@ -147,7 +166,7 @@ export default function FallDetector({ onFallDetected, facingMode = 'environment
     <div className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden rounded-[2rem]">
       <video ref={videoRef} playsInline muted className="hidden" />
       <canvas ref={canvasRef} width={640} height={640} className="w-full h-full object-contain" />
-      
+
       {!loading && !error && (
         <div className="absolute top-6 left-6 flex items-center gap-2 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10">
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
