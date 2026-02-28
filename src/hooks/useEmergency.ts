@@ -7,7 +7,7 @@ export const useEmergency = () => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    // เตรียมไฟล์เสียงไว้ล่วงหน้า
+    // เตรียมไฟล์เสียงไว้ล่วงหน้า า
     audioRef.current = new Audio('/alarm-sound.mp3');
     audioRef.current.loop = false; // ถ้าอยากให้ดังวนลูป ให้เปลี่ยนเป็น true
   }, []);
