@@ -66,12 +66,16 @@ export default function FallDetector({
 
         setLoading(false);
       } catch (e) {
+        console.error(e);
         setError("ไม่สามารถโหลดระบบ AI ได้");
       }
     };
 
     initAI();
-    return () => stopCamera();
+    return () => {
+      stopCamera();
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -79,10 +83,14 @@ export default function FallDetector({
   }, [facingMode, loading]);
 
   const stopCamera = () => {
-    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    if (requestRef.current) {
+      cancelAnimationFrame(requestRef.current);
+      requestRef.current = null;
+    }
     if (videoRef.current?.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
     }
   };
 
@@ -103,10 +111,13 @@ export default function FallDetector({
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play();
-          requestRef.current = requestAnimationFrame(detect);
+          if (!requestRef.current) {
+            requestRef.current = requestAnimationFrame(detect);
+          }
         };
       }
-    } catch {
+    } catch (err) {
+      console.error("Camera error:", err);
       setError("ไม่สามารถเข้าถึงกล้องได้");
     }
   };
@@ -144,13 +155,7 @@ export default function FallDetector({
 
     try {
       // รันโมเดล Fall Detection เดิม
-      const inputTensor = new ort.Tensor("float32", input, [
-        1,
-        3,
-        size,
-        size,
-      ]);
-
+      const inputTensor = new ort.Tensor("float32", input, [1, 3, size, size]);
       const output = await sessionRef.current.run({ images: inputTensor });
       const data = output.output0.data as Float32Array;
 
@@ -188,8 +193,6 @@ export default function FallDetector({
           ctx.lineWidth = 6;
 
           let drawX = x - w / 2;
-
-          // mirror พิกัดกรอบถ้าเป็นกล้องหน้า
           if (facingMode === "user") {
             drawX = size - x - w / 2;
           }
@@ -205,9 +208,8 @@ export default function FallDetector({
         const [x, y, width, height] = pred.bbox;
         const label = pred.class;
 
-        // กรองเฉพาะ คน สุนัข แมว
         if (['person', 'dog', 'cat'].includes(label)) {
-          ctx.strokeStyle = label === 'person' ? "#00FF00" : "#00FFFF"; // คนสีเขียว สัตว์สีฟ้า
+          ctx.strokeStyle = label === 'person' ? "#00FF00" : "#00FFFF";
           ctx.lineWidth = 3;
 
           let drawX = x;
@@ -218,7 +220,7 @@ export default function FallDetector({
           ctx.strokeRect(drawX, y, width, height);
           ctx.fillStyle = ctx.strokeStyle;
           ctx.font = "bold 16px Arial";
-          ctx.fillText(`${label}`, drawX, y > 20 ? y - 5 : 20);
+          ctx.fillText(`${label.toUpperCase()}`, drawX, y > 20 ? y - 5 : 20);
         }
       });
 
@@ -229,7 +231,7 @@ export default function FallDetector({
         fallCounter.current = Math.max(0, fallCounter.current - 1);
       }
     } catch (e) {
-      console.error(e);
+      console.error("Inference Error:", e);
     }
 
     requestRef.current = requestAnimationFrame(detect);
@@ -246,13 +248,16 @@ export default function FallDetector({
       />
 
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
-          Loading AI Security System...
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-md z-50">
+          <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-white text-xs font-black tracking-widest animate-pulse uppercase">
+            Initializing AI Security Core...
+          </p>
         </div>
       )}
 
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center text-red-500 text-sm">
+        <div className="absolute inset-0 flex items-center justify-center bg-black/80 text-red-500 text-sm font-bold p-6 text-center z-50">
           {error}
         </div>
       )}

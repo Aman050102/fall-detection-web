@@ -6,7 +6,7 @@ import { db } from "@/lib/firebase";
 import { ref, set, push, serverTimestamp } from "firebase/database";
 import { Cpu, ShieldCheck, RefreshCw, Home } from "lucide-react";
 
-// แก้ไขเป็น URL Cloudflare Worker ของคุณ
+// ✅ URL ของ Cloudflare Worker ของคุณ
 const CLOUDFLARE_WORKER_URL = "https://cctv-stream-worker.aman02012548.workers.dev";
 
 export default function CameraPage() {
@@ -20,12 +20,13 @@ export default function CameraPage() {
   const lastStreamTime = useRef(0);
   const isUploading = useRef(false);
   const streamCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const toggleCamera = () => {
     setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
   };
 
-  // ---------------- STREAM LIVE (ส่งเข้า Cloudflare) ----------------
+  // ---------------- STREAM LIVE (ปรับปรุงการส่งให้เสถียรสำหรับแผน Paid) ----------------
   const streamLive = async () => {
     const mainCanvas = document.querySelector("canvas") as HTMLCanvasElement;
     if (!mainCanvas || isUploading.current) return;
@@ -39,6 +40,7 @@ export default function CameraPage() {
       lastFpsUpdate.current = now;
     }
 
+    // ✅ ปรับความถี่เป็น ~150ms เพื่อความลื่นไหลสูงสุดในแผน Paid (ประมาณ 7 FPS)
     if (now - lastStreamTime.current > 150) {
       isUploading.current = true;
 
@@ -50,6 +52,7 @@ export default function CameraPage() {
         const sCanvas = streamCanvasRef.current;
         const sCtx = sCanvas.getContext("2d");
 
+        // ลดขนาด Payload เพื่อลดดีเลย์ (320x320 เพียงพอสำหรับ Monitor)
         sCanvas.width = 320;
         sCanvas.height = 320;
 
@@ -64,25 +67,39 @@ export default function CameraPage() {
           sCtx.restore();
         }
 
-        const frame = sCanvas.toDataURL("image/jpeg", 0.4);
+        const frame = sCanvas.toDataURL("image/jpeg", 0.3);
+
+        // ยกเลิก Request เก่าที่ยังค้างอยู่เพื่อป้องกัน Network Congestion
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        abortControllerRef.current = new AbortController();
 
         // ✅ ส่งภาพไป Cloudflare Worker
-        await fetch(CLOUDFLARE_WORKER_URL, {
+        const fetchPromise = fetch(CLOUDFLARE_WORKER_URL, {
           method: "PUT",
           body: JSON.stringify({ frame }),
           headers: { "Content-Type": "application/json" },
           mode: 'cors',
-        }).catch(err => console.warn("Cloudflare Syncing..."));
+          signal: abortControllerRef.current.signal
+        });
 
+        // ตั้ง Timeout การส่งที่ 1 วินาที (ถ้าเกินนี้ให้ยกเลิกเพื่อส่งเฟรมถัดไปทันที)
+        const timeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout')), 1000)
+        );
+
+        await Promise.race([fetchPromise, timeout]);
         lastStreamTime.current = now;
       } catch (error) {
-        console.error("Stream Error:", error);
+        if ((error as Error).name !== 'AbortError') {
+          console.warn("Cloudflare Syncing...");
+        }
       } finally {
         isUploading.current = false;
       }
     }
   };
 
+  // ---------------- FALL DETECTED (บันทึกหลักฐานลง Firebase) ----------------
   const handleFallDetected = async () => {
     if (isAlert) return;
     setIsAlert(true);
@@ -110,6 +127,7 @@ export default function CameraPage() {
     }
 
     try {
+      // ✅ เก็บสถานะการล้มและรูปหลักฐานลง Firebase
       await set(ref(db, "system/fall_event"), {
         detected: true,
         evidence,
@@ -133,7 +151,10 @@ export default function CameraPage() {
   useEffect(() => {
     setMounted(true);
     const interval = setInterval(streamLive, 100);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+    };
   }, [facingMode]);
 
   if (!mounted) return null;
@@ -141,6 +162,7 @@ export default function CameraPage() {
   return (
     <div className="min-h-screen bg-black text-white p-4 flex flex-col items-center justify-center font-sans">
       <div className="w-full max-w-5xl space-y-4">
+        {/* HEADER */}
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full animate-pulse ${isAlert ? "bg-red-500" : "bg-blue-500"}`} />
@@ -153,6 +175,7 @@ export default function CameraPage() {
           </div>
         </div>
 
+        {/* CAMERA VIEW */}
         <div className={`relative aspect-video rounded-[2.5rem] overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' : 'border-white/10'}`}>
           <div className="w-full h-full transition-transform duration-500" style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)' }}>
             <FallDetector onFallDetected={handleFallDetected} facingMode={facingMode} />
@@ -164,13 +187,22 @@ export default function CameraPage() {
                 {isAlert ? '● EMERGENCY' : '● LIVE'}
               </div>
               <div className="flex gap-2 pointer-events-auto">
-                <Link href="/"><button className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl"><Home size={20} /></button></Link>
-                <button onClick={toggleCamera} className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl"><RefreshCw size={20} /></button>
+                <Link href="/">
+                  <button className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
+                    <Home size={20} />
+                  </button>
+                </Link>
+                <button onClick={toggleCamera} className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
+                  <RefreshCw size={20} />
+                </button>
               </div>
             </div>
             <div className="flex justify-between items-end">
               <div className="space-y-1">
-                <div className="flex items-center gap-2 text-blue-400"><Cpu size={12} /><span className="text-[10px] font-black uppercase tracking-tighter">AI_GUARD_V2</span></div>
+                <div className="flex items-center gap-2 text-blue-400">
+                  <Cpu size={12} />
+                  <span className="text-[10px] font-black uppercase tracking-tighter">AI_GUARD_V2</span>
+                </div>
                 <p className="text-[10px] font-mono opacity-70 text-zinc-400 uppercase tracking-widest">Status: Ready</p>
               </div>
             </div>
@@ -182,9 +214,14 @@ export default function CameraPage() {
           )}
         </div>
 
+        {/* FOOTER */}
         <div className="flex justify-between items-center px-4 py-3 bg-zinc-900/50 rounded-2xl border border-white/5">
-          <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest"><ShieldCheck size={14} className="text-blue-500" /> Security Protocol Active</div>
-          <div className="text-[10px] font-bold text-zinc-500 font-mono italic">{mounted ? new Date().toLocaleTimeString("en-GB") : "--:--:--"}</div>
+          <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest">
+            <ShieldCheck size={14} className="text-blue-500" /> Security Protocol Active
+          </div>
+          <div className="text-[10px] font-bold text-zinc-500 font-mono italic">
+            {mounted ? new Date().toLocaleTimeString("en-GB") : "--:--:--"}
+          </div>
         </div>
       </div>
     </div>
