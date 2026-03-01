@@ -39,6 +39,7 @@ export default function MonitorPage() {
   const lastUpdateRef = useRef<number>(0);
   const prevEmergencyRef = useRef(false);
 
+  // ดึงฟังก์ชันมาจาก Custom Hook
   const { triggerAlarm, requestPermission, stopAlarm } = useEmergency();
 
   useEffect(() => {
@@ -76,9 +77,10 @@ export default function MonitorPage() {
         setFallTime(null);
       }
 
-      // Trigger alarm only when state changes
+      // Trigger alarm เฉพาะเมื่อเปลี่ยนสถานะจากปกติเป็นล้ม
       if (detected && !prevEmergencyRef.current) {
-        return { triggerAlarm, requestPermission, stopAlarm };
+        // เรียกใช้ triggerAlarm() โดยตรง (TypeScript จะไม่ฟ้องเพราะเราดึงมาจาก useEmergency)
+        triggerAlarm();
       }
 
       if (!detected) {
@@ -127,6 +129,7 @@ export default function MonitorPage() {
       setIsOffline(diff > 8000);
     }, 3000);
 
+    // Cleanup function เมื่อ Component ถูกทำลาย
     return () => {
       clearInterval(timer);
       off(liveRef);
@@ -134,7 +137,7 @@ export default function MonitorPage() {
       off(historyRef);
       stopAlarm();
     };
-  }, []);
+  }, [triggerAlarm, stopAlarm, requestPermission]);
 
   const handleReset = async () => {
     stopAlarm();
@@ -146,7 +149,9 @@ export default function MonitorPage() {
   };
 
   const handleDeleteHistory = async (id: string) => {
-    if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) await remove(ref(db, `history/falls/${id}`));
+    if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) {
+      await remove(ref(db, `history/falls/${id}`));
+    }
   };
 
   return (
@@ -158,9 +163,9 @@ export default function MonitorPage() {
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-4">
             <Link href="/">
-              <button className="p-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-2xl border border-white/5 transition-all">
+              <div className="p-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-2xl border border-white/5 transition-all cursor-pointer">
                 <Home size={20} className="text-zinc-400" />
-              </button>
+              </div>
             </Link>
 
             <div
@@ -173,10 +178,10 @@ export default function MonitorPage() {
             </div>
 
             <div>
-              <h1 className="font-black uppercase text-xl italic">
+              <h1 className="font-black uppercase text-xl italic leading-none">
                 Monitor Hub
               </h1>
-              <p className="text-[10px] text-zinc-500 font-bold uppercase">
+              <p className="text-[10px] text-zinc-500 font-bold uppercase mt-1">
                 AI Surveillance
               </p>
             </div>
@@ -202,33 +207,33 @@ export default function MonitorPage() {
       <main className="max-w-[1600px] mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-8 space-y-6">
           {isEmergency && (
-            <section className="bg-red-600 rounded-[2.5rem] p-4 flex gap-6">
+            <section className="bg-red-600 rounded-[2.5rem] p-6 flex flex-col md:flex-row gap-6 items-center md:items-start transition-all">
               {evidence && (
                 <img
                   src={evidence}
-                  className="w-48 aspect-square rounded-xl object-cover"
+                  className="w-48 aspect-square rounded-2xl object-cover shadow-2xl"
                   alt="Evidence"
                 />
               )}
 
-              <div>
-                <h2 className="text-2xl font-black uppercase italic">
+              <div className="flex-1 text-center md:text-left">
+                <h2 className="text-3xl font-black uppercase italic leading-tight">
                   Fall Event Detected
                 </h2>
-                <p className="text-xs uppercase">
-                  Time: {fallTime ?? "-"}
+                <p className="text-sm uppercase font-bold opacity-80 mt-1">
+                  Alert Time: {fallTime ?? "-"}
                 </p>
                 <button
                   onClick={handleReset}
-                  className="mt-4 bg-white text-red-600 px-6 py-2 rounded-xl font-black"
+                  className="mt-6 bg-white text-red-600 hover:bg-zinc-100 px-8 py-3 rounded-2xl font-black transition-all shadow-xl active:scale-95"
                 >
-                  Resolve Alert
+                  RESOLVE ALERT
                 </button>
               </div>
             </section>
           )}
 
-          <section className="relative aspect-video bg-zinc-900 rounded-3xl overflow-hidden">
+          <section className="relative aspect-video bg-zinc-900 rounded-[2.5rem] overflow-hidden border border-white/5 shadow-2xl">
             {liveFrame && !isOffline ? (
               <img
                 src={liveFrame}
@@ -236,38 +241,41 @@ export default function MonitorPage() {
                 alt="Live Feed"
               />
             ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-600">
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 bg-zinc-950">
                 <Activity className="animate-pulse mb-4" size={48} />
-                Searching for Signal
+                <p className="font-bold uppercase tracking-widest text-sm">Searching for Signal</p>
               </div>
             )}
           </section>
         </div>
 
         <div className="lg:col-span-4">
-          <section className="bg-zinc-900 rounded-3xl p-6 h-full">
-            <h3 className="text-xs font-bold uppercase mb-4 flex items-center gap-2">
+          <section className="bg-zinc-900 rounded-[2.5rem] p-8 h-full border border-white/5 shadow-2xl">
+            <h3 className="text-xs font-bold uppercase mb-6 flex items-center gap-2 text-zinc-400">
               <History size={14} /> Incident Logs
             </h3>
 
-            <div className="space-y-3">
+            <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
               {history.length > 0 ? (
                 history.map((item) => (
                   <div
                     key={item.id}
-                    className="flex items-center gap-4 p-3 bg-white/5 rounded-xl"
+                    className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5 hover:bg-white/10 transition-all group"
                   >
                     {item.evidence && (
                       <img
                         src={item.evidence}
-                        className="w-14 h-14 rounded-lg object-cover"
-                        alt=""
+                        className="w-16 h-16 rounded-xl object-cover shadow-lg"
+                        alt="Log thumbnail"
                       />
                     )}
 
                     <div className="flex-1">
-                      <p className="text-xs text-zinc-400">
+                      <p className="text-[11px] font-bold text-zinc-200">
                         {item.timeStr ?? "-"}
+                      </p>
+                      <p className="text-[9px] uppercase font-black text-red-500/80 mt-1 tracking-wider">
+                        Fall Log Detected
                       </p>
                     </div>
 
@@ -275,15 +283,16 @@ export default function MonitorPage() {
                       onClick={() =>
                         handleDeleteHistory(item.id)
                       }
-                      className="text-zinc-500 hover:text-red-500"
+                      className="p-2 text-zinc-600 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all opacity-0 group-hover:opacity-100"
                     >
-                      <Trash2 size={16} />
+                      <Trash2 size={18} />
                     </button>
                   </div>
                 ))
               ) : (
-                <div className="opacity-20 text-center py-10">
-                  <History size={40} />
+                <div className="flex flex-col items-center justify-center py-20 opacity-20">
+                  <History size={48} />
+                  <p className="text-[10px] font-bold uppercase mt-4">No Data Found</p>
                 </div>
               )}
             </div>
