@@ -1,32 +1,15 @@
 "use client";
-
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { db } from "@/lib/firebase";
-import {
-  ref,
-  onValue,
-  set,
-  query,
-  limitToLast,
-  remove,
-  off,
-} from "firebase/database";
+import { ref, onValue, set, query, limitToLast, remove, off } from "firebase/database";
 import { useEmergency } from "@/hooks/useEmergency";
-import {
-  ShieldAlert,
-  Activity,
-  History,
-  Trash2,
-  Home,
-} from "lucide-react";
+import { ShieldAlert, Activity, History, Trash2, Home } from "lucide-react";
 
-interface HistoryItem {
-  id: string;
-  evidence?: string;
-  timestamp?: number;
-  timeStr?: string;
-}
+// แก้ไขเป็น URL Cloudflare Worker ของคุณ
+const CLOUDFLARE_WORKER_URL = "https://cctv-stream-worker.aman02012548.workers.dev";
+
+interface HistoryItem { id: string; evidence?: string; timestamp?: number; timeStr?: string; }
 
 export default function MonitorPage() {
   const [isEmergency, setIsEmergency] = useState(false);
@@ -36,103 +19,74 @@ export default function MonitorPage() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isOffline, setIsOffline] = useState(false);
 
-  const lastUpdateRef = useRef<number>(0);
+  const lastUpdateRef = useRef<number>(Date.now());
   const prevEmergencyRef = useRef(false);
-
-  // ดึงฟังก์ชันมาจาก Custom Hook
   const { triggerAlarm, requestPermission, stopAlarm } = useEmergency();
 
   useEffect(() => {
     requestPermission();
 
-    // ---------------- LIVE STREAM ----------------
-    const liveRef = ref(db, "system/live_stream");
+    // 🔴 1. LIVE STREAM (ดึงจาก Cloudflare)
+    const fetchLiveStream = async () => {
+      try {
+        const res = await fetch(CLOUDFLARE_WORKER_URL, {
+          cache: 'no-store',
+          mode: 'cors'
+        });
 
-    onValue(liveRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data?.frame) {
-        setLiveFrame(data.frame);
-        lastUpdateRef.current = Date.now();
+        if (!res.ok) throw new Error("Worker Error");
+        const data = await res.json();
+
+        if (data && data.frame) {
+          setLiveFrame(data.frame);
+          lastUpdateRef.current = Date.now();
+          setIsOffline(false);
+        }
+      } catch (e) {
+        console.error("Fetch error:", e);
       }
-    });
+    };
 
-    // ---------------- FALL EVENT ----------------
+    // ดึงข้อมูลทุก 150ms เพื่อให้ภาพต่อเนื่อง
+    const liveInterval = setInterval(fetchLiveStream, 150);
+
+    // 🔥 2. FALL EVENT (ดึงจาก Firebase ตามเดิม)
     const eventRef = ref(db, "system/fall_event");
-
     onValue(eventRef, (snapshot) => {
       const data = snapshot.val();
       if (!data) return;
-
       const detected = Boolean(data.detected);
-      const evidenceImg = data.evidence ?? null;
-      const timestamp = data.timestamp ?? null;
-
       setIsEmergency(detected);
-      setEvidence(evidenceImg);
+      setEvidence(data.evidence ?? null);
+      if (data.timestamp) setFallTime(new Date(data.timestamp).toLocaleString());
 
-      if (timestamp) {
-        const timeStr = new Date(timestamp).toLocaleString();
-        setFallTime(timeStr);
-      } else {
-        setFallTime(null);
-      }
-
-      // Trigger alarm เฉพาะเมื่อเปลี่ยนสถานะจากปกติเป็นล้ม
-      if (detected && !prevEmergencyRef.current) {
-        // เรียกใช้ triggerAlarm() โดยตรง (TypeScript จะไม่ฟ้องเพราะเราดึงมาจาก useEmergency)
-        triggerAlarm("Emergency: Fall detected");
-      }
-
-      if (!detected) {
-        stopAlarm();
-      }
-
+      if (detected && !prevEmergencyRef.current) triggerAlarm("Emergency: Fall detected");
+      if (!detected) stopAlarm();
       prevEmergencyRef.current = detected;
     });
 
-    // ---------------- HISTORY ----------------
-    const historyRef = query(
-      ref(db, "history/falls"),
-      limitToLast(20)
-    );
-
+    // 📜 3. HISTORY (ดึงจาก Firebase ตามเดิม)
+    const historyRef = query(ref(db, "history/falls"), limitToLast(20));
     onValue(historyRef, (snapshot) => {
       const data = snapshot.val();
-
-      if (!data) {
-        setHistory([]);
-        return;
-      }
-
-      const parsed: HistoryItem[] = Object.entries(data)
-        .map(([id, value]) => {
-          const item = value as any;
-          return {
-            id,
-            evidence: item.evidence,
-            timestamp: item.timestamp,
-            timeStr:
-              item.timeStr ??
-              (item.timestamp
-                ? new Date(item.timestamp).toLocaleString()
-                : undefined),
-          };
-        })
-        .reverse();
-
+      if (!data) { setHistory([]); return; }
+      const parsed = Object.entries(data).map(([id, value]: any) => ({
+        id, evidence: value.evidence, timestamp: value.timestamp,
+        timeStr: value.timeStr ?? (value.timestamp ? new Date(value.timestamp).toLocaleString() : undefined)
+      })).reverse();
       setHistory(parsed);
     });
 
-    // ---------------- OFFLINE CHECK ----------------
+    // 🚨 4. OFFLINE CHECK
     const timer = setInterval(() => {
-      const diff = Date.now() - lastUpdateRef.current;
-      setIsOffline(diff > 8000);
+      if (Date.now() - lastUpdateRef.current > 8000) {
+        setIsOffline(true);
+      }
     }, 3000);
 
-    // Cleanup function เมื่อ Component ถูกทำลาย
     return () => {
+      clearInterval(liveInterval);
       clearInterval(timer);
-      off(liveRef);
       off(eventRef);
       off(historyRef);
       stopAlarm();
@@ -141,65 +95,25 @@ export default function MonitorPage() {
 
   const handleReset = async () => {
     stopAlarm();
-    await set(ref(db, "system/fall_event"), {
-      detected: false,
-      evidence: null,
-      timestamp: null,
-    });
+    await set(ref(db, "system/fall_event"), { detected: false, evidence: null, timestamp: null });
   };
 
-  const handleDeleteHistory = async (id: string) => {
-    if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) {
-      await remove(ref(db, `history/falls/${id}`));
-    }
+  const handleDeleteHistory = async (id) => {
+    if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) await remove(ref(db, `history/falls/${id}`));
   };
 
   return (
-    <div
-      className={`min-h-screen transition-all duration-700 ${isEmergency ? "bg-red-950" : "bg-[#050505]"
-        } text-zinc-100`}
-    >
+    <div className={`min-h-screen transition-all duration-700 ${isEmergency ? "bg-red-950" : "bg-[#050505]"} text-zinc-100`}>
       <header className="border-b border-white/5 bg-black/40 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-4">
-            <Link href="/">
-              <div className="p-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-2xl border border-white/5 transition-all cursor-pointer">
-                <Home size={20} className="text-zinc-400" />
-              </div>
-            </Link>
-
-            <div
-              className={`p-2.5 rounded-2xl ${isEmergency
-                  ? "bg-red-600 animate-pulse"
-                  : "bg-blue-600"
-                }`}
-            >
-              <ShieldAlert size={22} className="text-white" />
-            </div>
-
-            <div>
-              <h1 className="font-black uppercase text-xl italic leading-none">
-                Monitor Hub
-              </h1>
-              <p className="text-[10px] text-zinc-500 font-bold uppercase mt-1">
-                AI Surveillance
-              </p>
-            </div>
+            <Link href="/"><div className="p-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-2xl cursor-pointer"><Home size={20} className="text-zinc-400" /></div></Link>
+            <div className={`p-2.5 rounded-2xl ${isEmergency ? "bg-red-600 animate-pulse" : "bg-blue-600"}`}><ShieldAlert size={22} className="text-white" /></div>
+            <div><h1 className="font-black uppercase text-xl italic leading-none">Monitor Hub</h1><p className="text-[10px] text-zinc-500 font-bold uppercase mt-1">AI Surveillance</p></div>
           </div>
-
-          <div
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black border ${isOffline
-                ? "border-red-500 text-red-500 bg-red-500/5"
-                : "border-green-500 text-green-500 bg-green-500/5"
-              }`}
-          >
-            <div
-              className={`w-1.5 h-1.5 rounded-full ${isOffline
-                  ? "bg-red-500"
-                  : "bg-green-500 animate-pulse"
-                }`}
-            />
-            {isOffline ? "CAM OFFLINE" : "CAM ONLINE"}
+          <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black border ${isOffline ? "border-red-500 text-red-500 bg-red-500/5" : "border-green-500 text-green-500 bg-green-500/5"}`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${isOffline ? "bg-red-500" : "bg-green-500 animate-pulse"}`} />
+            {isOffline ? "CAM OFFLINE" : "STREAM ONLINE"}
           </div>
         </div>
       </header>
@@ -208,42 +122,22 @@ export default function MonitorPage() {
         <div className="lg:col-span-8 space-y-6">
           {isEmergency && (
             <section className="bg-red-600 rounded-[2.5rem] p-6 flex flex-col md:flex-row gap-6 items-center md:items-start transition-all">
-              {evidence && (
-                <img
-                  src={evidence}
-                  className="w-48 aspect-square rounded-2xl object-cover shadow-2xl"
-                  alt="Evidence"
-                />
-              )}
-
+              {evidence && <img src={evidence} className="w-48 aspect-square rounded-2xl object-cover shadow-2xl" alt="Evidence" />}
               <div className="flex-1 text-center md:text-left">
-                <h2 className="text-3xl font-black uppercase italic leading-tight">
-                  Fall Event Detected
-                </h2>
-                <p className="text-sm uppercase font-bold opacity-80 mt-1">
-                  Alert Time: {fallTime ?? "-"}
-                </p>
-                <button
-                  onClick={handleReset}
-                  className="mt-6 bg-white text-red-600 hover:bg-zinc-100 px-8 py-3 rounded-2xl font-black transition-all shadow-xl active:scale-95"
-                >
-                  RESOLVE ALERT
-                </button>
+                <h2 className="text-3xl font-black uppercase italic leading-tight">Fall Event Detected</h2>
+                <p className="text-sm uppercase font-bold opacity-80 mt-1">Alert Time: {fallTime ?? "-"}</p>
+                <button onClick={handleReset} className="mt-6 bg-white text-red-600 px-8 py-3 rounded-2xl font-black transition-all shadow-xl active:scale-95">RESOLVE ALERT</button>
               </div>
             </section>
           )}
 
           <section className="relative aspect-video bg-zinc-900 rounded-[2.5rem] overflow-hidden border border-white/5 shadow-2xl">
             {liveFrame && !isOffline ? (
-              <img
-                src={liveFrame}
-                className="w-full h-full object-cover"
-                alt="Live Feed"
-              />
+              <img src={liveFrame} className="w-full h-full object-cover" alt="Live Feed" />
             ) : (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 bg-zinc-950">
                 <Activity className="animate-pulse mb-4" size={48} />
-                <p className="font-bold uppercase tracking-widest text-sm">Searching for Signal</p>
+                <p className="font-bold uppercase tracking-widest text-sm">Searching for Cloudflare Signal...</p>
               </div>
             )}
           </section>
@@ -251,50 +145,18 @@ export default function MonitorPage() {
 
         <div className="lg:col-span-4">
           <section className="bg-zinc-900 rounded-[2.5rem] p-8 h-full border border-white/5 shadow-2xl">
-            <h3 className="text-xs font-bold uppercase mb-6 flex items-center gap-2 text-zinc-400">
-              <History size={14} /> Incident Logs
-            </h3>
-
+            <h3 className="text-xs font-bold uppercase mb-6 flex items-center gap-2 text-zinc-400"><History size={14} /> Incident Logs (Firebase)</h3>
             <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-              {history.length > 0 ? (
-                history.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5 hover:bg-white/10 transition-all group"
-                  >
-                    {item.evidence && (
-                      <img
-                        src={item.evidence}
-                        className="w-16 h-16 rounded-xl object-cover shadow-lg"
-                        alt="Log thumbnail"
-                      />
-                    )}
-
-                    <div className="flex-1">
-                      <p className="text-[11px] font-bold text-zinc-200">
-                        {item.timeStr ?? "-"}
-                      </p>
-                      <p className="text-[9px] uppercase font-black text-red-500/80 mt-1 tracking-wider">
-                        Fall Log Detected
-                      </p>
-                    </div>
-
-                    <button
-                      onClick={() =>
-                        handleDeleteHistory(item.id)
-                      }
-                      className="p-2 text-zinc-600 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all opacity-0 group-hover:opacity-100"
-                    >
-                      <Trash2 size={18} />
-                    </button>
+              {history.length > 0 ? history.map((item) => (
+                <div key={item.id} className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5 hover:bg-white/10 transition-all group">
+                  {item.evidence && <img src={item.evidence} className="w-16 h-16 rounded-xl object-cover shadow-lg" alt="thumbnail" />}
+                  <div className="flex-1">
+                    <p className="text-[11px] font-bold text-zinc-200">{item.timeStr ?? "-"}</p>
+                    <p className="text-[9px] uppercase font-black text-red-500/80 mt-1 tracking-wider">Fall Log Detected</p>
                   </div>
-                ))
-              ) : (
-                <div className="flex flex-col items-center justify-center py-20 opacity-20">
-                  <History size={48} />
-                  <p className="text-[10px] font-bold uppercase mt-4">No Data Found</p>
+                  <button onClick={() => handleDeleteHistory(item.id)} className="p-2 text-zinc-600 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all opacity-0 group-hover:opacity-100"><Trash2 size={18} /></button>
                 </div>
-              )}
+              )) : <div className="flex flex-col items-center justify-center py-20 opacity-20"><History size={48} /><p className="text-[10px] font-bold uppercase mt-4">No Data Found</p></div>}
             </div>
           </section>
         </div>

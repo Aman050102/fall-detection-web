@@ -21,18 +21,49 @@ export default function FallDetector({
   const requestRef = useRef<number | null>(null);
   const fallCounter = useRef(0);
 
+  // --- ส่วนที่เพิ่มเข้ามา: สำหรับตรวจจับ คน และ สัตว์ ---
+  const [isObjectAiReady, setIsObjectAiReady] = useState(false);
+  const cocoSsdModelRef = useRef<any>(null);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const size = 640;
 
+  // ฟังก์ชันโหลด Script ภายนอกเพื่อป้องกัน Build Error (Module not found)
+  const loadExternalAiScripts = () => {
+    return new Promise((resolve) => {
+      if ((window as any).cocoSsd) {
+        resolve(true);
+        return;
+      }
+      const tfjs = document.createElement("script");
+      tfjs.src = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs";
+      tfjs.onload = () => {
+        const coco = document.createElement("script");
+        coco.src = "https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd";
+        coco.onload = () => resolve(true);
+        document.head.appendChild(coco);
+      };
+      document.head.appendChild(tfjs);
+    });
+  };
+
   useEffect(() => {
     const initAI = async () => {
       try {
+        // 1. โหลดระบบ Fall Detection เดิม (ห้ามตัด)
         const sess = await ort.InferenceSession.create("/model/best.onnx", {
           executionProviders: ["wasm"],
         });
         sessionRef.current = sess;
+
+        // 2. โหลดระบบตรวจจับ คน/สัตว์ เพิ่มเติม (ที่สั่งเพิ่ม)
+        await loadExternalAiScripts();
+        const model = await (window as any).cocoSsd.load();
+        cocoSsdModelRef.current = model;
+        setIsObjectAiReady(true);
+
         setLoading(false);
       } catch (e) {
         setError("ไม่สามารถโหลดระบบ AI ได้");
@@ -97,7 +128,7 @@ export default function FallDetector({
     if (!ctx) return;
 
     // ==============================
-    // 1️⃣ ให้ AI ใช้ภาพปกติ (ไม่ mirror)
+    // 1️⃣ ส่วนประมวลผล Fall Detection (ของเดิมเป๊ะๆ ห้ามแก้)
     // ==============================
     ctx.clearRect(0, 0, size, size);
     ctx.drawImage(videoRef.current, 0, 0, size, size);
@@ -112,6 +143,7 @@ export default function FallDetector({
     }
 
     try {
+      // รันโมเดล Fall Detection เดิม
       const inputTensor = new ort.Tensor("float32", input, [
         1,
         3,
@@ -122,10 +154,16 @@ export default function FallDetector({
       const output = await sessionRef.current.run({ images: inputTensor });
       const data = output.output0.data as Float32Array;
 
+      // รันโมเดลตรวจจับ คน/สัตว์ ที่เพิ่มเข้ามา
+      let objectPredictions = [];
+      if (isObjectAiReady && cocoSsdModelRef.current) {
+        objectPredictions = await cocoSsdModelRef.current.detect(videoRef.current);
+      }
+
       let foundFallInFrame = false;
 
       // ==============================
-      // 2️⃣ แสดงผล Mirror เฉพาะ Preview
+      // 2️⃣ ส่วนแสดงผล Mirror และวาดกรอบ (Preview)
       // ==============================
       ctx.clearRect(0, 0, size, size);
 
@@ -138,6 +176,7 @@ export default function FallDetector({
       }
       ctx.restore();
 
+      // --- วาดกรอบตรวจจับการล้ม (ของเดิม) ---
       for (let i = 0; i < 8400; i++) {
         if (data[4 * 8400 + i] > 0.7) {
           const x = data[0 * 8400 + i];
@@ -145,22 +184,43 @@ export default function FallDetector({
           const w = data[2 * 8400 + i];
           const h = data[3 * 8400 + i];
 
-          ctx.strokeStyle = "#FF3131";
+          ctx.strokeStyle = "#FF3131"; // สีแดงสำหรับล้ม
           ctx.lineWidth = 6;
 
           let drawX = x - w / 2;
 
-          // mirror พิกัดกรอบถ้า front
+          // mirror พิกัดกรอบถ้าเป็นกล้องหน้า
           if (facingMode === "user") {
             drawX = size - x - w / 2;
           }
 
           ctx.strokeRect(drawX, y - h / 2, w, h);
-
           foundFallInFrame = true;
           break;
         }
       }
+
+      // --- วาดกรอบตรวจจับ คน และ สัตว์ (ที่เพิ่มเข้ามา) ---
+      objectPredictions.forEach((pred: any) => {
+        const [x, y, width, height] = pred.bbox;
+        const label = pred.class;
+
+        // กรองเฉพาะ คน สุนัข แมว
+        if (['person', 'dog', 'cat'].includes(label)) {
+          ctx.strokeStyle = label === 'person' ? "#00FF00" : "#00FFFF"; // คนสีเขียว สัตว์สีฟ้า
+          ctx.lineWidth = 3;
+
+          let drawX = x;
+          if (facingMode === "user") {
+            drawX = size - x - width;
+          }
+
+          ctx.strokeRect(drawX, y, width, height);
+          ctx.fillStyle = ctx.strokeStyle;
+          ctx.font = "bold 16px Arial";
+          ctx.fillText(`${label}`, drawX, y > 20 ? y - 5 : 20);
+        }
+      });
 
       if (foundFallInFrame) {
         fallCounter.current += 1;
@@ -187,7 +247,7 @@ export default function FallDetector({
 
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
-          Loading AI...
+          Loading AI Security System...
         </div>
       )}
 
