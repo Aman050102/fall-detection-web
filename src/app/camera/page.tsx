@@ -10,6 +10,7 @@ export default function CameraPage() {
   const [isAlert, setIsAlert] = useState(false);
   const [fps, setFps] = useState(0);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+  const [mounted, setMounted] = useState(false);
 
   const frameCount = useRef(0);
   const lastFpsUpdate = useRef(0);
@@ -34,18 +35,21 @@ export default function CameraPage() {
       lastFpsUpdate.current = now;
     }
 
-    if (now - lastStreamTime.current > 250) {
+    // ส่งภาพทุกๆ 200ms ไปยัง Firebase (ขนาดเล็ก 200px เพื่อความลื่นไหลและไม่ติดโควตาฟรี)
+    if (now - lastStreamTime.current > 200) {
       isUploading.current = true;
       try {
         if (!streamCanvasRef.current) {
           streamCanvasRef.current = document.createElement('canvas');
         }
         const sCanvas = streamCanvasRef.current;
-        const sCtx = sCanvas.getContext('2d');
-        sCanvas.width = 320;
-        sCanvas.height = 320;
-        sCtx?.drawImage(mainCanvas, 0, 0, 320, 320);
-        const frame = sCanvas.toDataURL('image/jpeg', 0.4);
+        const sCtx = sCanvas.getContext('2d', { alpha: false });
+
+        // ✅ ใช้ขนาด 200px ข้อมูล Base64 จะเล็กลงมาก ช่วยลด Delay ได้มหาศาล
+        sCanvas.width = 200;
+        sCanvas.height = 200;
+        sCtx?.drawImage(mainCanvas, 0, 0, 200, 200);
+        const frame = sCanvas.toDataURL('image/jpeg', 0.2);
 
         await set(ref(db, 'system/live_stream'), {
           frame,
@@ -90,6 +94,7 @@ export default function CameraPage() {
   };
 
   useEffect(() => {
+    setMounted(true);
     const interval = setInterval(streamLive, 100);
     return () => clearInterval(interval);
   }, []);
@@ -156,7 +161,7 @@ export default function CameraPage() {
             Security Protocol Active
           </div>
           <div className="text-[10px] font-bold text-zinc-500 font-mono italic">
-            {new Date().toLocaleTimeString('en-GB')}
+            {mounted ? new Date().toLocaleTimeString('en-GB') : "--:--:--"}
           </div>
         </div>
       </div>
