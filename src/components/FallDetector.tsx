@@ -195,7 +195,7 @@ export default function FallDetector({
         <div className="absolute inset-0 flex items-center justify-center text-red-500 text-sm">
           {error}
         </div>
-      )}
+      </div>
     </div>
   );
 }

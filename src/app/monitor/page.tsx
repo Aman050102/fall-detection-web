@@ -128,6 +128,7 @@ export default function MonitorPage() {
     }, 3000);
 
     return () => {
+      clearInterval(streamInterval);
       clearInterval(timer);
       off(liveRef);
       off(eventRef);
@@ -146,9 +147,7 @@ export default function MonitorPage() {
   };
 
   const handleDeleteHistory = async (id: string) => {
-    if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) {
-      await remove(ref(db, `history/falls/${id}`));
-    }
+    if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) await remove(ref(db, `history/falls/${id}`));
   };
 
   return (

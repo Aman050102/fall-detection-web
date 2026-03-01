@@ -15,4 +15,4 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getDatabase(app); // ตัวกลางสำหรับส่งสัญญาณ AI
+export const db = getDatabase(app); 
