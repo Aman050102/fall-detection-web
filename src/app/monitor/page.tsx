@@ -1,77 +1,148 @@
 "use client";
-import React, { useState, useEffect, useRef } from 'react';
-import Link from 'next/link';
-import { db } from '@/lib/firebase';
-import { ref, onValue, set, query, limitToLast, remove } from "firebase/database";
-import { useEmergency } from '@/hooks/useEmergency';
+
+import React, { useState, useEffect, useRef } from "react";
+import Link from "next/link";
+import { db } from "@/lib/firebase";
 import {
-  ShieldAlert, Activity, Clock, History,
-  Trash2, Home
-} from 'lucide-react';
+  ref,
+  onValue,
+  set,
+  query,
+  limitToLast,
+  remove,
+  off,
+} from "firebase/database";
+import { useEmergency } from "@/hooks/useEmergency";
+import {
+  ShieldAlert,
+  Activity,
+  History,
+  Trash2,
+  Home,
+} from "lucide-react";
+
+interface HistoryItem {
+  id: string;
+  evidence?: string;
+  timestamp?: number;
+  timeStr?: string;
+}
 
 export default function MonitorPage() {
   const [isEmergency, setIsEmergency] = useState(false);
   const [liveFrame, setLiveFrame] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<string | null>(null);
-  const [lastUpdate, setLastUpdate] = useState<number>(Date.now());
   const [fallTime, setFallTime] = useState<string | null>(null);
-  const [history, setHistory] = useState<any[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isOffline, setIsOffline] = useState(false);
 
-  const { triggerAlarm, requestPermission, stopAlarm } = useEmergency();
+  const lastUpdateRef = useRef<number>(0);
   const prevEmergencyRef = useRef(false);
+
+  const { triggerAlarm, requestPermission, stopAlarm } = useEmergency();
 
   useEffect(() => {
     requestPermission();
 
-    const timer = setInterval(() => {
-      setIsOffline(Date.now() - lastUpdate > 8000);
-    }, 3000);
+    // ---------------- LIVE STREAM ----------------
+    const liveRef = ref(db, "live/frame");
 
-    const unsubscribeLive = onValue(ref(db, 'system/live_stream'), (s) => {
-      const data = s.val();
-      if (data?.frame) {
-        setLiveFrame(data.frame);
-        setLastUpdate(Date.now());
-        setIsOffline(false);
+    onValue(liveRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setLiveFrame(data);
+        lastUpdateRef.current = Date.now();
       }
     });
 
-    const unsubscribeEvent = onValue(ref(db, 'system/fall_event'), (s) => {
-      const data = s.val();
-      const detected = !!data?.detected;
-      if (detected) {
-        setIsEmergency(true);
-        setEvidence(data.evidence);
-        setFallTime(data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : "N/A");
-        if (!prevEmergencyRef.current) {
-          triggerAlarm(`🚨 EMERGENCY: Fall detected!`);
-        }
+    // ---------------- FALL EVENT ----------------
+    const eventRef = ref(db, "system/fall_event");
+
+    onValue(eventRef, (snapshot) => {
+      const data = snapshot.val();
+      if (!data) return;
+
+      const detected = Boolean(data.detected);
+      const evidenceImg = data.evidence ?? null;
+      const timestamp = data.timestamp ?? null;
+
+      setIsEmergency(detected);
+      setEvidence(evidenceImg);
+
+      if (timestamp) {
+        const timeStr = new Date(timestamp).toLocaleString();
+        setFallTime(timeStr);
       } else {
-        setIsEmergency(false);
+        setFallTime(null);
+      }
+
+      // Trigger alarm only when state changes
+      if (detected && !prevEmergencyRef.current) {
+        triggerAlarm();
+      }
+
+      if (!detected) {
         stopAlarm();
       }
+
       prevEmergencyRef.current = detected;
     });
 
-    const historyQuery = query(ref(db, 'history/falls'), limitToLast(20));
-    const unsubscribeHistory = onValue(historyQuery, (s) => {
-      const data = s.val();
-      if (data) {
-        setHistory(Object.entries(data).map(([id, value]: [string, any]) => ({ id, ...value })).reverse());
-      } else { setHistory([]); }
+    // ---------------- HISTORY ----------------
+    const historyRef = query(
+      ref(db, "history/falls"),
+      limitToLast(20)
+    );
+
+    onValue(historyRef, (snapshot) => {
+      const data = snapshot.val();
+
+      if (!data) {
+        setHistory([]);
+        return;
+      }
+
+      const parsed: HistoryItem[] = Object.entries(data)
+        .map(([id, value]) => {
+          const item = value as any;
+          return {
+            id,
+            evidence: item.evidence,
+            timestamp: item.timestamp,
+            timeStr:
+              item.timeStr ??
+              (item.timestamp
+                ? new Date(item.timestamp).toLocaleString()
+                : undefined),
+          };
+        })
+        .reverse();
+
+      setHistory(parsed);
     });
+
+    // ---------------- OFFLINE CHECK ----------------
+    const timer = setInterval(() => {
+      const diff = Date.now() - lastUpdateRef.current;
+      setIsOffline(diff > 8000);
+    }, 3000);
 
     return () => {
       clearInterval(timer);
-      unsubscribeLive(); unsubscribeEvent(); unsubscribeHistory();
+      off(liveRef);
+      off(eventRef);
+      off(historyRef);
       stopAlarm();
     };
-  }, [lastUpdate]);
+  }, []);
 
   const handleReset = async () => {
     stopAlarm();
-    await set(ref(db, 'system/fall_event'), { detected: false, evidence: null });
+    await set(ref(db, "system/fall_event"), {
+      detected: false,
+      evidence: null,
+      timestamp: null,
+    });
   };
 
   const handleDeleteHistory = async (id: string) => {
@@ -81,7 +152,11 @@ export default function MonitorPage() {
   };
 
   return (
-    <div className={`min-h-screen transition-all duration-700 ${isEmergency ? 'bg-red-950' : 'bg-[#050505]'} text-zinc-100 font-sans`}>
+    <div
+      className={`min-h-screen transition-all duration-700 ${
+        isEmergency ? "bg-red-950" : "bg-[#050505]"
+      } text-zinc-100`}
+    >
       <header className="border-b border-white/5 bg-black/40 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-4">
@@ -90,17 +165,42 @@ export default function MonitorPage() {
                 <Home size={20} className="text-zinc-400" />
               </button>
             </Link>
-            <div className={`p-2.5 rounded-2xl ${isEmergency ? 'bg-red-600 animate-pulse shadow-lg shadow-red-600/20' : 'bg-blue-600 shadow-md'}`}>
+
+            <div
+              className={`p-2.5 rounded-2xl ${
+                isEmergency
+                  ? "bg-red-600 animate-pulse"
+                  : "bg-blue-600"
+              }`}
+            >
               <ShieldAlert size={22} className="text-white" />
             </div>
+
             <div>
-              <h1 className="font-black uppercase tracking-tighter text-xl italic">Monitor Hub</h1>
-              <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest leading-none">AI Surveillance</p>
+              <h1 className="font-black uppercase text-xl italic">
+                Monitor Hub
+              </h1>
+              <p className="text-[10px] text-zinc-500 font-bold uppercase">
+                AI Surveillance
+              </p>
             </div>
           </div>
-          <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black border ${isOffline ? 'border-red-500 text-red-500 bg-red-500/5' : 'border-green-500 text-green-500 bg-green-500/5'}`}>
-            <div className={`w-1.5 h-1.5 rounded-full ${isOffline ? 'bg-red-500' : 'bg-green-500 animate-pulse'}`} />
-            {isOffline ? 'CAM OFFLINE' : 'CAM ONLINE'}
+
+          <div
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black border ${
+              isOffline
+                ? "border-red-500 text-red-500 bg-red-500/5"
+                : "border-green-500 text-green-500 bg-green-500/5"
+            }`}
+          >
+            <div
+              className={`w-1.5 h-1.5 rounded-full ${
+                isOffline
+                  ? "bg-red-500"
+                  : "bg-green-500 animate-pulse"
+              }`}
+            />
+            {isOffline ? "CAM OFFLINE" : "CAM ONLINE"}
           </div>
         </div>
       </header>
@@ -108,51 +208,87 @@ export default function MonitorPage() {
       <main className="max-w-[1600px] mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-8 space-y-6">
           {isEmergency && (
-            <section className="bg-red-600 rounded-[2.5rem] p-4 flex flex-col md:flex-row items-center gap-6 animate-in slide-in-from-top-4 duration-500 shadow-2xl">
-              <img src={evidence || ""} className="w-full md:w-48 aspect-square rounded-[1.5rem] object-cover border-2 border-white/20" alt="Evidence" />
-              <div className="flex-1 text-center md:text-left">
-                <h2 className="text-2xl font-black text-white uppercase italic tracking-tighter text-ellipsis overflow-hidden">Fall Event Detected</h2>
-                <p className="text-white/80 font-bold text-xs uppercase tracking-widest">Time: {fallTime}</p>
-                <button onClick={handleReset} className="mt-4 bg-white text-red-600 px-8 py-3 rounded-xl font-black uppercase text-xs hover:scale-105 transition-all">Resolve Alert</button>
+            <section className="bg-red-600 rounded-[2.5rem] p-4 flex gap-6">
+              {evidence && (
+                <img
+                  src={evidence}
+                  className="w-48 aspect-square rounded-xl object-cover"
+                  alt="Evidence"
+                />
+              )}
+
+              <div>
+                <h2 className="text-2xl font-black uppercase italic">
+                  Fall Event Detected
+                </h2>
+                <p className="text-xs uppercase">
+                  Time: {fallTime ?? "-"}
+                </p>
+                <button
+                  onClick={handleReset}
+                  className="mt-4 bg-white text-red-600 px-6 py-2 rounded-xl font-black"
+                >
+                  Resolve Alert
+                </button>
               </div>
             </section>
           )}
 
-          <section className="relative aspect-video bg-zinc-900 rounded-[3rem] overflow-hidden border border-white/5 shadow-2xl">
+          <section className="relative aspect-video bg-zinc-900 rounded-3xl overflow-hidden">
             {liveFrame && !isOffline ? (
-              <img src={liveFrame} className="w-full h-full object-cover" alt="Live Feed" />
+              <img
+                src={liveFrame}
+                className="w-full h-full object-cover"
+                alt="Live Feed"
+              />
             ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700">
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-600">
                 <Activity className="animate-pulse mb-4" size={48} />
-                <p className="text-[10px] font-black uppercase tracking-[0.5em]">Searching for Signal</p>
+                Searching for Signal
               </div>
             )}
-            <div className="absolute top-8 left-8 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-xl border border-white/10 flex items-center gap-2">
-              <div className={`w-1.5 h-1.5 rounded-full ${isOffline ? 'bg-zinc-600' : 'bg-red-500 animate-pulse'}`} />
-              <span className="text-[9px] font-bold uppercase text-white tracking-widest italic">Stream Active</span>
-            </div>
           </section>
         </div>
 
         <div className="lg:col-span-4">
-          <section className="bg-zinc-900/30 backdrop-blur-xl rounded-[2.5rem] border border-white/5 p-6 h-full flex flex-col shadow-xl">
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-6 flex items-center gap-2">
+          <section className="bg-zinc-900 rounded-3xl p-6 h-full">
+            <h3 className="text-xs font-bold uppercase mb-4 flex items-center gap-2">
               <History size={14} /> Incident Logs
             </h3>
-            <div className="flex-1 space-y-3 overflow-y-auto pr-2 custom-scrollbar">
-              {history.length > 0 ? history.map((item) => (
-                <div key={item.id} className="group flex items-center gap-4 p-3 bg-white/[0.03] rounded-2xl border border-white/5 hover:bg-white/[0.06] transition-all">
-                  <img src={item.evidence} className="w-14 h-14 rounded-lg object-cover grayscale group-hover:grayscale-0 transition-all" />
-                  <div className="flex-1">
-                    <p className="text-[10px] font-bold text-zinc-400 italic">{item.timeStr}</p>
-                    <p className="text-[8px] font-black text-blue-500/50 uppercase tracking-widest">Logged</p>
+
+            <div className="space-y-3">
+              {history.length > 0 ? (
+                history.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-4 p-3 bg-white/5 rounded-xl"
+                  >
+                    {item.evidence && (
+                      <img
+                        src={item.evidence}
+                        className="w-14 h-14 rounded-lg object-cover"
+                        alt=""
+                      />
+                    )}
+
+                    <div className="flex-1">
+                      <p className="text-xs text-zinc-400">
+                        {item.timeStr ?? "-"}
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() =>
+                        handleDeleteHistory(item.id)
+                      }
+                      className="text-zinc-500 hover:text-red-500"
+                    >
+                      <Trash2 size={16} />
+                    </button>
                   </div>
-                  <button onClick={() => handleDeleteHistory(item.id)} className="p-2 text-zinc-600 hover:text-red-500 transition-colors">
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              )) : (
-                <div className="h-full flex flex-col items-center justify-center opacity-10">
+                ))
+              ) : (
+                <div className="opacity-20 text-center py-10">
                   <History size={40} />
                 </div>
               )}
@@ -160,11 +296,6 @@ export default function MonitorPage() {
           </section>
         </div>
       </main>
-
-      <style jsx global>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 3px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
-      `}</style>
     </div>
   );
 }
