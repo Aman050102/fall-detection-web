@@ -36,8 +36,7 @@ export default function CameraPage() {
       lastFpsUpdate.current = now;
     }
 
-    if (now - lastStreamTime.current > 200) {
-    // ✅ รีดสปีดสูงสุด: ส่งภาพทุกๆ 150ms ไปยัง Firebase แบบจิ๋ว (ลื่นและฟรี)
+    // ส่งทุก ~150ms
     if (now - lastStreamTime.current > 150) {
       isUploading.current = true;
 
@@ -55,7 +54,6 @@ export default function CameraPage() {
         if (sCtx) {
           sCtx.save();
 
-          // ✅ Mirror ถ้าเป็นกล้องหน้า
           if (facingMode === "user") {
             sCtx.scale(-1, 1);
             sCtx.drawImage(mainCanvas, -320, 0, 320, 320);
@@ -81,7 +79,7 @@ export default function CameraPage() {
         isUploading.current = false;
       }
     }
-  };
+  }; // ✅ ปิด function ให้ครบ
 
   // ---------------- FALL DETECTED ----------------
   const handleFallDetected = async () => {
@@ -101,7 +99,6 @@ export default function CameraPage() {
       if (tempCtx) {
         tempCtx.save();
 
-        // ✅ Mirror ตอนบันทึกหลักฐาน
         if (facingMode === "user") {
           tempCtx.scale(-1, 1);
           tempCtx.drawImage(
@@ -147,7 +144,6 @@ export default function CameraPage() {
     const interval = setInterval(streamLive, 100);
     return () => clearInterval(interval);
   }, [facingMode]);
-  }, []);
 
   if (!mounted) return null;
 
@@ -170,16 +166,9 @@ export default function CameraPage() {
         </div>
 
         {/* CAMERA VIEW */}
-        <div className={`relative aspect-video rounded-[2.5rem] overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? "border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]" : "border-white/10"}`}>
-          
-          <FallDetector
-            onFallDetected={handleFallDetected}
-            facingMode={facingMode}
-          />
-
         <div className={`relative aspect-video rounded-[2.5rem] overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' : 'border-white/10'}`}>
 
-          {/* ✅ Mirror Effect เฉพาะ Front Camera */}
+          {/* Mirror Effect */}
           <div
             className="w-full h-full transition-transform duration-500"
             style={{
@@ -213,6 +202,7 @@ export default function CameraPage() {
                 </button>
               </div>
             </div>
+
             <div className="flex justify-between items-end">
               <div className="space-y-1">
                 <div className="flex items-center gap-2 text-blue-400">
@@ -228,10 +218,11 @@ export default function CameraPage() {
             </div>
           </div>
 
-          {/* ALERT SCREEN */}
           {isAlert && (
             <div className="absolute inset-0 bg-red-600/20 backdrop-blur-sm flex items-center justify-center z-50">
-              <div className="bg-red-600 text-white px-8 py-3 rounded-2xl font-black text-2xl italic uppercase animate-bounce shadow-2xl border-2 border-white/20">FALL DETECTED</div>
+              <div className="bg-red-600 text-white px-8 py-3 rounded-2xl font-black text-2xl italic uppercase animate-bounce shadow-2xl border-2 border-white/20">
+                FALL DETECTED
+              </div>
             </div>
           )}
         </div>
@@ -247,6 +238,7 @@ export default function CameraPage() {
             {mounted ? new Date().toLocaleTimeString("en-GB") : "--:--:--"}
           </div>
         </div>
+
       </div>
     </div>
   );

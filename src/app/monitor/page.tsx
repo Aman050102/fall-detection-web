@@ -80,7 +80,7 @@ export default function MonitorPage() {
       // Trigger alarm เฉพาะเมื่อเปลี่ยนสถานะจากปกติเป็นล้ม
       if (detected && !prevEmergencyRef.current) {
         // เรียกใช้ triggerAlarm() โดยตรง (TypeScript จะไม่ฟ้องเพราะเราดึงมาจาก useEmergency)
-        triggerAlarm();
+        triggerAlarm("Emergency: Fall detected");
       }
 
       if (!detected) {
