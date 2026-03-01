@@ -98,7 +98,8 @@ export default function MonitorPage() {
     await set(ref(db, "system/fall_event"), { detected: false, evidence: null, timestamp: null });
   };
 
-  const handleDeleteHistory = async (id) => {
+  // ✅ แก้ไข: ระบุ Type ให้ id เป็น string เพื่อให้ Build ผ่าน
+  const handleDeleteHistory = async (id: string) => {
     if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) await remove(ref(db, `history/falls/${id}`));
   };
 
