@@ -4,11 +4,17 @@ export class StreamStorage {
   }
   async fetch(request) {
     if (request.method === "PUT") {
-      const data = await request.json();
-      this.currentFrame = data.frame;
+      // ✅ รับข้อมูลแบบ Binary
+      this.currentFrame = await request.arrayBuffer();
       return new Response("OK");
     }
-    return new Response(JSON.stringify({ frame: this.currentFrame || null }));
+    // ✅ ส่งกลับเป็นภาพ JPEG
+    return new Response(this.currentFrame, {
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Cache-Control": "no-cache"
+      }
+    });
   }
 }
 

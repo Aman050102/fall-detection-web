@@ -6,7 +6,7 @@ import { db } from "@/lib/firebase";
 import { ref, set, push, serverTimestamp } from "firebase/database";
 import { Cpu, ShieldCheck, RefreshCw, Home } from "lucide-react";
 
-// ✅ URL ของ Cloudflare Worker ของคุณ
+//  URL ของ Cloudflare Worker ของคุณ
 const CLOUDFLARE_WORKER_URL = "https://cctv-stream-worker.aman02012548.workers.dev";
 
 export default function CameraPage() {
@@ -26,7 +26,7 @@ export default function CameraPage() {
     setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
   };
 
-  // ---------------- STREAM LIVE (ปรับปรุงการส่งให้เสถียรสำหรับแผน Paid) ----------------
+  // ---------------- STREAM LIVE (แก้ไขให้ลื่นไหลด้วย Binary) ----------------
   const streamLive = async () => {
     const mainCanvas = document.querySelector("canvas") as HTMLCanvasElement;
     if (!mainCanvas || isUploading.current) return;
@@ -40,8 +40,8 @@ export default function CameraPage() {
       lastFpsUpdate.current = now;
     }
 
-    // ✅ ปรับความถี่เป็น ~150ms เพื่อความลื่นไหลสูงสุดในแผน Paid (ประมาณ 7 FPS)
-    if (now - lastStreamTime.current > 150) {
+    //  ปรับความถี่ให้เหมาะสมกับความเร็ว Binary
+    if (now - lastStreamTime.current > 100) {
       isUploading.current = true;
 
       try {
@@ -52,48 +52,44 @@ export default function CameraPage() {
         const sCanvas = streamCanvasRef.current;
         const sCtx = sCanvas.getContext("2d");
 
-        // ลดขนาด Payload เพื่อลดดีเลย์ (320x320 เพียงพอสำหรับ Monitor)
-        sCanvas.width = 320;
-        sCanvas.height = 320;
+        sCanvas.width = 240;
+        sCanvas.height = 240;
 
         if (sCtx) {
           sCtx.save();
           if (facingMode === "user") {
             sCtx.scale(-1, 1);
-            sCtx.drawImage(mainCanvas, -320, 0, 320, 320);
+            sCtx.drawImage(mainCanvas, -240, 0, 240, 240);
           } else {
-            sCtx.drawImage(mainCanvas, 0, 0, 320, 320);
+            sCtx.drawImage(mainCanvas, 0, 0, 240, 240);
           }
           sCtx.restore();
         }
 
-        const frame = sCanvas.toDataURL("image/jpeg", 0.3);
+        // ✅ เปลี่ยนจาก Base64 เป็น Blob (Binary) เพื่อลด Payload 33% และลดการทำงาน CPU
+        sCanvas.toBlob(async (blob) => {
+          if (!blob) return;
 
-        // ยกเลิก Request เก่าที่ยังค้างอยู่เพื่อป้องกัน Network Congestion
-        if (abortControllerRef.current) abortControllerRef.current.abort();
-        abortControllerRef.current = new AbortController();
+          if (abortControllerRef.current) abortControllerRef.current.abort();
+          abortControllerRef.current = new AbortController();
 
-        // ✅ ส่งภาพไป Cloudflare Worker
-        const fetchPromise = fetch(CLOUDFLARE_WORKER_URL, {
-          method: "PUT",
-          body: JSON.stringify({ frame }),
-          headers: { "Content-Type": "application/json" },
-          mode: 'cors',
-          signal: abortControllerRef.current.signal
-        });
+          try {
+            await fetch(CLOUDFLARE_WORKER_URL, {
+              method: "PUT",
+              body: blob, // ส่ง Binary ตรงๆ
+              headers: { "Content-Type": "image/jpeg" },
+              mode: 'cors',
+              signal: abortControllerRef.current.signal
+            });
+            lastStreamTime.current = Date.now();
+          } catch (e) {
+            // Error handling
+          } finally {
+            isUploading.current = false;
+          }
+        }, "image/jpeg", 0.2);
 
-        // ตั้ง Timeout การส่งที่ 1 วินาที (ถ้าเกินนี้ให้ยกเลิกเพื่อส่งเฟรมถัดไปทันที)
-        const timeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Timeout')), 1000)
-        );
-
-        await Promise.race([fetchPromise, timeout]);
-        lastStreamTime.current = now;
       } catch (error) {
-        if ((error as Error).name !== 'AbortError') {
-          console.warn("Cloudflare Syncing...");
-        }
-      } finally {
         isUploading.current = false;
       }
     }
@@ -127,7 +123,6 @@ export default function CameraPage() {
     }
 
     try {
-      // ✅ เก็บสถานะการล้มและรูปหลักฐานลง Firebase
       await set(ref(db, "system/fall_event"), {
         detected: true,
         evidence,
@@ -150,7 +145,7 @@ export default function CameraPage() {
 
   useEffect(() => {
     setMounted(true);
-    const interval = setInterval(streamLive, 100);
+    const interval = setInterval(streamLive, 50); // ตั้งให้ถี่ขึ้นได้เพราะ Binary เบามาก
     return () => {
       clearInterval(interval);
       if (abortControllerRef.current) abortControllerRef.current.abort();

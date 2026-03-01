@@ -25,45 +25,37 @@ export default function MonitorPage() {
   useEffect(() => {
     requestPermission();
 
-    // 🔴 1. ULTRA LOW LATENCY FETCH
     let isMounted = true;
-    let controller = new AbortController();
 
-    const fetchLiveStream = async () => {
+    //  แก้ไข: ใช้เทคนิค Double Buffering + RequestAnimationFrame เพื่อลด Delay สะสม
+    const fetchLiveStream = () => {
       if (!isMounted) return;
 
-      // ยกเลิก Request ที่ค้างนานเกินไป เพื่อรับอันใหม่ที่สดกว่า
-      controller.abort();
-      controller = new AbortController();
+      const timestamp = Date.now();
+      const img = new Image();
+      // บังคับโหลดภาพใหม่ด้วย timestamp
+      img.src = `${CLOUDFLARE_WORKER_URL}?t=${timestamp}`;
 
-      try {
-        const res = await fetch(CLOUDFLARE_WORKER_URL, {
-          cache: 'no-cache',      // ห้ามใช้ Cache เด็ดขาด
-          mode: 'cors',
-          priority: 'high',       // ให้ความสำคัญสูงสุด
-          signal: controller.signal
+      img.onload = () => {
+        if (!isMounted) return;
+        setLiveFrame(img.src);
+        lastUpdateRef.current = Date.now();
+        setIsOffline(false);
+
+        // ใช้ requestAnimationFrame เพื่อให้การเปลี่ยนภาพสัมพันธ์กับ refresh rate ของจอ
+        // และรอให้ภาพโหลดเสร็จก่อนค่อยเริ่มขอภาพถัดไป เพื่อไม่ให้เกิด Network Congestion
+        requestAnimationFrame(() => {
+          setTimeout(fetchLiveStream, 10);
         });
+      };
 
-        if (res.ok) {
-          const data = await res.json();
-          if (data.frame) {
-            setLiveFrame(data.frame);
-            lastUpdateRef.current = Date.now();
-            setIsOffline(false);
-          }
-        }
-      } catch (e) {
-        // ข้าม Error ที่เกิดจากการ Abort หรือ Network กระตุก
-      }
-
-      // ⚡ ปรับเป็น 10ms (รัวที่สุดเท่าที่เบราว์เซอร์จะรับได้)
-      // เพื่อให้ดึงภาพทันทีที่ Edge Node อัปเดตข้อมูลสำเร็จ
-      setTimeout(fetchLiveStream, 10);
+      img.onerror = () => {
+        if (isMounted) setTimeout(fetchLiveStream, 500);
+      };
     };
 
     fetchLiveStream();
 
-    // 🔥 2. FALL EVENT (Firebase - คงเดิม)
     const eventRef = ref(db, "system/fall_event");
     onValue(eventRef, (snapshot) => {
       const data = snapshot.val();
@@ -76,7 +68,6 @@ export default function MonitorPage() {
       prevEmergencyRef.current = data.detected;
     });
 
-    // 📜 3. HISTORY (Firebase - คงเดิม)
     const historyRef = query(ref(db, "history/falls"), limitToLast(20));
     onValue(historyRef, (snapshot) => {
       const data = snapshot.val();
@@ -93,7 +84,6 @@ export default function MonitorPage() {
 
     return () => {
       isMounted = false;
-      controller.abort();
       clearInterval(offlineTimer);
       off(eventRef);
       off(historyRef);
