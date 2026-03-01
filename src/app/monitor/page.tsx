@@ -45,12 +45,12 @@ export default function MonitorPage() {
     requestPermission();
 
     // ---------------- LIVE STREAM ----------------
-    const liveRef = ref(db, "live/frame");
+    const liveRef = ref(db, "system/live_stream");
 
     onValue(liveRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) {
-        setLiveFrame(data);
+      if (data?.frame) {
+        setLiveFrame(data.frame);
         lastUpdateRef.current = Date.now();
       }
     });
@@ -78,7 +78,7 @@ export default function MonitorPage() {
 
       // Trigger alarm only when state changes
       if (detected && !prevEmergencyRef.current) {
-        triggerAlarm();
+        return { triggerAlarm, requestPermission, stopAlarm };
       }
 
       if (!detected) {
@@ -128,7 +128,6 @@ export default function MonitorPage() {
     }, 3000);
 
     return () => {
-      clearInterval(streamInterval);
       clearInterval(timer);
       off(liveRef);
       off(eventRef);
@@ -152,9 +151,8 @@ export default function MonitorPage() {
 
   return (
     <div
-      className={`min-h-screen transition-all duration-700 ${
-        isEmergency ? "bg-red-950" : "bg-[#050505]"
-      } text-zinc-100`}
+      className={`min-h-screen transition-all duration-700 ${isEmergency ? "bg-red-950" : "bg-[#050505]"
+        } text-zinc-100`}
     >
       <header className="border-b border-white/5 bg-black/40 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex justify-between items-center">
@@ -166,11 +164,10 @@ export default function MonitorPage() {
             </Link>
 
             <div
-              className={`p-2.5 rounded-2xl ${
-                isEmergency
+              className={`p-2.5 rounded-2xl ${isEmergency
                   ? "bg-red-600 animate-pulse"
                   : "bg-blue-600"
-              }`}
+                }`}
             >
               <ShieldAlert size={22} className="text-white" />
             </div>
@@ -186,18 +183,16 @@ export default function MonitorPage() {
           </div>
 
           <div
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black border ${
-              isOffline
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black border ${isOffline
                 ? "border-red-500 text-red-500 bg-red-500/5"
                 : "border-green-500 text-green-500 bg-green-500/5"
-            }`}
+              }`}
           >
             <div
-              className={`w-1.5 h-1.5 rounded-full ${
-                isOffline
+              className={`w-1.5 h-1.5 rounded-full ${isOffline
                   ? "bg-red-500"
                   : "bg-green-500 animate-pulse"
-              }`}
+                }`}
             />
             {isOffline ? "CAM OFFLINE" : "CAM ONLINE"}
           </div>

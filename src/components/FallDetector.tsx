@@ -18,7 +18,7 @@ export default function FallDetector({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sessionRef = useRef<ort.InferenceSession | null>(null);
-  const requestRef = useRef<number>();
+  const requestRef = useRef<number | null>(null);
   const fallCounter = useRef(0);
 
   const [loading, setLoading] = useState(true);
@@ -195,7 +195,7 @@ export default function FallDetector({
         <div className="absolute inset-0 flex items-center justify-center text-red-500 text-sm">
           {error}
         </div>
-      </div>
+      )}
     </div>
   );
 }
