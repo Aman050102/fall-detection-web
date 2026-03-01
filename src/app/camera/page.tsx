@@ -35,8 +35,8 @@ export default function CameraPage() {
       lastFpsUpdate.current = now;
     }
 
-    // ส่งภาพทุกๆ 200ms ไปยัง Firebase (ขนาดเล็ก 200px เพื่อความลื่นไหลและไม่ติดโควตาฟรี)
-    if (now - lastStreamTime.current > 200) {
+    // ✅ รีดสปีดสูงสุด: ส่งภาพทุกๆ 150ms ไปยัง Firebase แบบจิ๋ว (ลื่นและฟรี)
+    if (now - lastStreamTime.current > 150) {
       isUploading.current = true;
       try {
         if (!streamCanvasRef.current) {
@@ -45,11 +45,11 @@ export default function CameraPage() {
         const sCanvas = streamCanvasRef.current;
         const sCtx = sCanvas.getContext('2d', { alpha: false });
 
-        // ✅ ใช้ขนาด 200px ข้อมูล Base64 จะเล็กลงมาก ช่วยลด Delay ได้มหาศาล
-        sCanvas.width = 200;
-        sCanvas.height = 200;
-        sCtx?.drawImage(mainCanvas, 0, 0, 200, 200);
-        const frame = sCanvas.toDataURL('image/jpeg', 0.2);
+        // ✅ บีบอัดเหลือ 160px ข้อมูล Base64 จะสั้นมากจนไม่มีดีเลย์
+        sCanvas.width = 160;
+        sCanvas.height = 160;
+        sCtx?.drawImage(mainCanvas, 0, 0, 160, 160);
+        const frame = sCanvas.toDataURL('image/jpeg', 0.2); 
 
         await set(ref(db, 'system/live_stream'), {
           frame,
@@ -80,8 +80,7 @@ export default function CameraPage() {
       });
 
       const historyRef = ref(db, 'history/falls');
-      const newHistoryEntry = push(historyRef);
-      await set(newHistoryEntry, {
+      await set(push(historyRef), {
         evidence,
         timestamp: serverTimestamp(),
         timeStr: new Date().toLocaleTimeString('th-TH'),
@@ -98,6 +97,8 @@ export default function CameraPage() {
     const interval = setInterval(streamLive, 100);
     return () => clearInterval(interval);
   }, []);
+
+  if (!mounted) return null;
 
   return (
     <div className="min-h-screen bg-black text-white p-4 flex flex-col items-center justify-center font-sans">
@@ -122,25 +123,14 @@ export default function CameraPage() {
               <div className="bg-black/50 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 text-[10px] font-bold">
                 {isAlert ? '● EMERGENCY' : '● LIVE'}
               </div>
-
               <div className="flex gap-2 pointer-events-auto">
-                <Link href="/">
-                  <button className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
-                    <Home size={20} />
-                  </button>
-                </Link>
-                <button onClick={toggleCamera} className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
-                  <RefreshCw size={20} />
-                </button>
+                <Link href="/"><button className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl"><Home size={20} /></button></Link>
+                <button onClick={toggleCamera} className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl"><RefreshCw size={20} /></button>
               </div>
             </div>
-
             <div className="flex justify-between items-end">
               <div className="space-y-1">
-                <div className="flex items-center gap-2 text-blue-400">
-                  <Cpu size={12} />
-                  <span className="text-[10px] font-black uppercase tracking-tighter">AI_GUARD_V2</span>
-                </div>
+                <div className="flex items-center gap-2 text-blue-400"><Cpu size={12} /><span className="text-[10px] font-black uppercase tracking-tighter">AI_GUARD_V2</span></div>
                 <p className="text-[10px] font-mono opacity-70 text-zinc-400 uppercase tracking-widest">Status: Ready</p>
               </div>
             </div>
@@ -148,21 +138,14 @@ export default function CameraPage() {
 
           {isAlert && (
             <div className="absolute inset-0 bg-red-600/20 backdrop-blur-sm flex items-center justify-center z-50">
-              <div className="bg-red-600 text-white px-8 py-3 rounded-2xl font-black text-2xl italic uppercase animate-bounce shadow-2xl border-2 border-white/20">
-                FALL DETECTED
-              </div>
+              <div className="bg-red-600 text-white px-8 py-3 rounded-2xl font-black text-2xl italic uppercase animate-bounce shadow-2xl border-2 border-white/20">FALL DETECTED</div>
             </div>
           )}
         </div>
 
         <div className="flex justify-between items-center px-4 py-3 bg-zinc-900/50 rounded-2xl border border-white/5">
-          <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest">
-            <ShieldCheck size={14} className="text-blue-500" />
-            Security Protocol Active
-          </div>
-          <div className="text-[10px] font-bold text-zinc-500 font-mono italic">
-            {mounted ? new Date().toLocaleTimeString('en-GB') : "--:--:--"}
-          </div>
+          <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest"><ShieldCheck size={14} className="text-blue-500" />Security Protocol Active</div>
+          <div className="text-[10px] font-bold text-zinc-500 font-mono italic">{new Date().toLocaleTimeString('en-GB')}</div>
         </div>
       </div>
     </div>

@@ -1,170 +1,178 @@
 "use client";
-import React, { useState, useEffect, useRef } from 'react';
-import Link from 'next/link';
-import FallDetector from '@/components/FallDetector';
-import { db } from '@/lib/firebase';
-import { ref, set, push, serverTimestamp } from "firebase/database";
-import { Cpu, ShieldCheck, RefreshCw, Home } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import * as ort from 'onnxruntime-web';
 
-export default function CameraPage() {
-  const [isAlert, setIsAlert] = useState(false);
-  const [fps, setFps] = useState(0);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
-  const [mounted, setMounted] = useState(false);
+// 1. ตั้งค่า Path สำหรับไฟล์ WASM
+ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+ort.env.logLevel = 'error';
 
-  const frameCount = useRef(0);
-  const lastFpsUpdate = useRef(0);
-  const lastStreamTime = useRef(0);
-  const isUploading = useRef(false);
-  const streamCanvasRef = useRef<HTMLCanvasElement | null>(null);
+interface FallDetectorProps {
+  onFallDetected: () => void;
+  facingMode?: 'user' | 'environment';
+}
 
-  const toggleCamera = () => {
-    setFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
-  };
+export default function FallDetector({ onFallDetected, facingMode = 'environment' }: FallDetectorProps) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sessionRef = useRef<ort.InferenceSession | null>(null);
+  const requestRef = useRef<number | undefined>(undefined);
 
-  const streamLive = async () => {
-    const mainCanvas = document.querySelector('canvas') as HTMLCanvasElement;
-    if (!mainCanvas || isUploading.current) return;
+  const fallCounter = useRef(0);
+  const [loading, setLoading] = useState(true);
+  const [cameraName, setCameraName] = useState<string>("กำลังค้นหากล้อง...");
+  const [error, setError] = useState<string | null>(null);
 
-    const now = Date.now();
-    frameCount.current++;
-
-    if (now - lastFpsUpdate.current > 1000) {
-      setFps(frameCount.current);
-      frameCount.current = 0;
-      lastFpsUpdate.current = now;
-    }
-
-    // ส่งภาพทุกๆ 200ms ไปยัง Firebase (ขนาดเล็ก 200px เพื่อความลื่นไหลและไม่ติดโควตาฟรี)
-    if (now - lastStreamTime.current > 200) {
-      isUploading.current = true;
-      try {
-        if (!streamCanvasRef.current) {
-          streamCanvasRef.current = document.createElement('canvas');
-        }
-        const sCanvas = streamCanvasRef.current;
-        const sCtx = sCanvas.getContext('2d', { alpha: false });
-
-        // ✅ ใช้ขนาด 200px ข้อมูล Base64 จะเล็กลงมาก ช่วยลด Delay ได้มหาศาล
-        sCanvas.width = 200;
-        sCanvas.height = 200;
-        sCtx?.drawImage(mainCanvas, 0, 0, 200, 200);
-        const frame = sCanvas.toDataURL('image/jpeg', 0.2);
-
-        await set(ref(db, 'system/live_stream'), {
-          frame,
-          lastActive: serverTimestamp(),
-          fps: frameCount.current
-        });
-        lastStreamTime.current = now;
-      } catch (error) {
-        console.error("Stream Error:", error);
-      } finally {
-        isUploading.current = false;
-      }
-    }
-  };
-
-  const handleFallDetected = async () => {
-    if (isAlert) return;
-    setIsAlert(true);
-
-    const mainCanvas = document.querySelector('canvas') as HTMLCanvasElement;
-    const evidence = mainCanvas ? mainCanvas.toDataURL('image/jpeg', 0.6) : null;
-
-    try {
-      await set(ref(db, 'system/fall_event'), {
-        detected: true,
-        evidence,
-        timestamp: serverTimestamp(),
-      });
-
-      const historyRef = ref(db, 'history/falls');
-      const newHistoryEntry = push(historyRef);
-      await set(newHistoryEntry, {
-        evidence,
-        timestamp: serverTimestamp(),
-        timeStr: new Date().toLocaleTimeString('th-TH'),
-      });
-    } catch (error) {
-      console.error("🚨 Firebase Save Error:", error);
-    }
-
-    setTimeout(() => setIsAlert(false), 10000);
-  };
-
+  // 2. โหลด Model AI แบบบังคับ Single Thread เพื่อแก้ปัญหาจอเขียวจาก SharedArrayBuffer
   useEffect(() => {
-    setMounted(true);
-    const interval = setInterval(streamLive, 100);
-    return () => clearInterval(interval);
+    const initAI = async () => {
+      try {
+        const sess = await ort.InferenceSession.create('/model/best.onnx', {
+          executionProviders: ['wasm'],
+          graphOptimizationLevel: 'all',
+          // ✅ ส่วนสำคัญ: ป้องกันเบราว์เซอร์บล็อกพิกเซลจนจอเขียว
+          enableCpuMemAccessRaw: true,
+          extra: { session: { num_threads: 1 } }
+        });
+        sessionRef.current = sess;
+        setLoading(false);
+      } catch (e) {
+        console.error("AI Initialization Error:", e);
+        setError("ไม่สามารถโหลดระบบ AI ได้");
+      }
+    };
+    initAI();
+    return () => stopCamera();
   }, []);
 
+  useEffect(() => {
+    if (!loading) startCamera();
+  }, [facingMode, loading]);
+
+  const stopCamera = () => {
+    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+    }
+  };
+
+  const startCamera = async () => {
+    try {
+      stopCamera();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: facingMode,
+          width: { ideal: 640 },
+          height: { ideal: 640 },
+          aspectRatio: 1
+        }
+      });
+      setCameraName(stream.getVideoTracks()[0].label || "Active Camera");
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play();
+          requestRef.current = requestAnimationFrame(detect);
+        };
+      }
+    } catch (err) {
+      console.error("Camera Access Error:", err);
+      setError("ไม่สามารถเข้าถึงกล้องได้");
+    }
+  };
+
+  const detect = async () => {
+    if (!videoRef.current || !sessionRef.current || !canvasRef.current || videoRef.current.paused) {
+      requestRef.current = requestAnimationFrame(detect);
+      return;
+    }
+
+    const canvas = canvasRef.current;
+    // ✅ ใช้ willReadFrequently และ alpha: false เพื่อความเร็วและแก้ปัญหาการจัดการหน่วยความจำ
+    const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: false });
+    if (!ctx) return;
+
+    // 3. วาดภาพจริงลง Canvas (ล้างพิกเซลสีเขียวทิ้งทุกเฟรมด้วยพื้นหลังดำ)
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, 640, 640);
+    ctx.drawImage(videoRef.current, 0, 0, 640, 640);
+
+    // 4. เตรียมข้อมูล Tensor
+    const imgData = ctx.getImageData(0, 0, 640, 640);
+    const pixels = imgData.data;
+    const input = new Float32Array(3 * 640 * 640);
+    for (let i = 0; i < 640 * 640; i++) {
+      input[i] = pixels[i * 4] / 255;           // R
+      input[i + 640 * 640] = pixels[i * 4 + 1] / 255;   // G
+      input[i + 2 * 640 * 640] = pixels[i * 4 + 2] / 255; // B
+    }
+
+    try {
+      const inputTensor = new ort.Tensor('float32', input, [1, 3, 640, 640]);
+      const output = await sessionRef.current.run({ images: inputTensor });
+      const data = output.output0.data as Float32Array;
+
+      let foundFallInFrame = false;
+
+      // 5. ลูปวาดกรอบสิ่งมีชีวิต (คน/สัตว์) และการล้ม
+      for (let i = 0; i < 8400; i++) {
+        const personScore = data[0 * 8400 + i];
+        const animalScore = data[1 * 8400 + i];
+        const fallScore = data[4 * 8400 + i];
+
+        if (personScore > 0.45 || animalScore > 0.45 || fallScore > 0.5) {
+          const x = data[0 * 8400 + i], y = data[1 * 8400 + i], w = data[2 * 8400 + i], h = data[3 * 8400 + i];
+
+          ctx.beginPath();
+          if (fallScore > 0.70) {
+            ctx.strokeStyle = "#FF3131"; // แดง: ล้ม
+            ctx.lineWidth = 6;
+            foundFallInFrame = true;
+          } else {
+            ctx.strokeStyle = "#00FF00"; // เขียว: สิ่งมีชีวิต
+            ctx.lineWidth = 2;
+          }
+          ctx.strokeRect(x - w / 2, y - h / 2, w, h);
+
+          ctx.fillStyle = ctx.strokeStyle;
+          ctx.font = "bold 16px Arial";
+          const label = fallScore > 0.70 ? "● FALLING" : (personScore > animalScore ? "● PERSON" : "● ANIMAL");
+          ctx.fillText(label, x - w / 2, y - h / 2 - 10);
+        }
+      }
+
+      if (foundFallInFrame) {
+        fallCounter.current++;
+        if (fallCounter.current >= 4) onFallDetected();
+      } else {
+        fallCounter.current = Math.max(0, fallCounter.current - 1);
+      }
+    } catch (e) {
+      console.error("AI Detect Error:", e);
+    }
+
+    requestRef.current = requestAnimationFrame(detect);
+  };
+
   return (
-    <div className="min-h-screen bg-black text-white p-4 flex flex-col items-center justify-center font-sans">
-      <div className="w-full max-w-5xl space-y-4">
-        <div className="flex items-center justify-between px-2">
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full animate-pulse ${isAlert ? 'bg-red-500' : 'bg-blue-500'}`} />
-            <h1 className="text-xs font-bold tracking-widest uppercase opacity-70">
-              {facingMode === 'user' ? 'Front' : 'Rear'} Cam Stable
-            </h1>
-          </div>
-          <div className="text-[10px] font-mono opacity-40 uppercase tracking-widest">
-            Stream Rate: {fps}Hz
-          </div>
+    <div className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden rounded-[2rem] border border-white/10">
+      <video ref={videoRef} playsInline muted className="hidden" />
+      <canvas ref={canvasRef} width={640} height={640} className="w-full h-full object-contain" />
+      
+      {!loading && !error && (
+        <div className="absolute top-6 left-6 flex items-center gap-2 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+          <p className="text-[11px] text-white font-medium uppercase tracking-wider">{cameraName}</p>
         </div>
+      )}
 
-        <div className={`relative aspect-video rounded-[2.5rem] overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' : 'border-white/10'}`}>
-          <FallDetector onFallDetected={handleFallDetected} facingMode={facingMode} />
-
-          <div className="absolute inset-0 pointer-events-none p-6 flex flex-col justify-between">
-            <div className="flex justify-between items-start">
-              <div className="bg-black/50 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 text-[10px] font-bold">
-                {isAlert ? '● EMERGENCY' : '● LIVE'}
-              </div>
-
-              <div className="flex gap-2 pointer-events-auto">
-                <Link href="/">
-                  <button className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
-                    <Home size={20} />
-                  </button>
-                </Link>
-                <button onClick={toggleCamera} className="p-3 bg-white/10 hover:bg-white/20 active:scale-90 backdrop-blur-xl rounded-2xl border border-white/10 transition-all shadow-xl">
-                  <RefreshCw size={20} />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex justify-between items-end">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-blue-400">
-                  <Cpu size={12} />
-                  <span className="text-[10px] font-black uppercase tracking-tighter">AI_GUARD_V2</span>
-                </div>
-                <p className="text-[10px] font-mono opacity-70 text-zinc-400 uppercase tracking-widest">Status: Ready</p>
-              </div>
-            </div>
-          </div>
-
-          {isAlert && (
-            <div className="absolute inset-0 bg-red-600/20 backdrop-blur-sm flex items-center justify-center z-50">
-              <div className="bg-red-600 text-white px-8 py-3 rounded-2xl font-black text-2xl italic uppercase animate-bounce shadow-2xl border-2 border-white/20">
-                FALL DETECTED
-              </div>
-            </div>
-          )}
+      {loading && (
+        <div className="absolute inset-0 bg-zinc-950 flex flex-col items-center justify-center z-10">
+          <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-blue-500 font-bold animate-pulse text-xs uppercase tracking-widest">AI INITIALIZING...</p>
         </div>
-
-        <div className="flex justify-between items-center px-4 py-3 bg-zinc-900/50 rounded-2xl border border-white/5">
-          <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest">
-            <ShieldCheck size={14} className="text-blue-500" />
-            Security Protocol Active
-          </div>
-          <div className="text-[10px] font-bold text-zinc-500 font-mono italic">
-            {mounted ? new Date().toLocaleTimeString('en-GB') : "--:--:--"}
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
