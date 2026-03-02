@@ -6,7 +6,6 @@ import { db } from "@/lib/firebase";
 import { ref, set, push, serverTimestamp } from "firebase/database";
 import { Cpu, ShieldCheck, RefreshCw, Home } from "lucide-react";
 
-//  URL ของ Cloudflare Worker ของคุณ
 const CLOUDFLARE_WORKER_URL = "https://cctv-stream-worker.aman02012548.workers.dev";
 
 export default function CameraPage() {
@@ -26,7 +25,7 @@ export default function CameraPage() {
     setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
   };
 
-  // ---------------- STREAM LIVE (แก้ไขให้ลื่นไหลด้วย Binary) ----------------
+  // ---------------- STREAM LIVE (Binary Mode) ----------------
   const streamLive = async () => {
     const mainCanvas = document.querySelector("canvas") as HTMLCanvasElement;
     if (!mainCanvas || isUploading.current) return;
@@ -40,18 +39,12 @@ export default function CameraPage() {
       lastFpsUpdate.current = now;
     }
 
-    //  ปรับความถี่ให้เหมาะสมกับความเร็ว Binary
-    if (now - lastStreamTime.current > 100) {
+    if (now - lastStreamTime.current > 80) { // ปรับความเร็วการส่งภาพ
       isUploading.current = true;
-
       try {
-        if (!streamCanvasRef.current) {
-          streamCanvasRef.current = document.createElement("canvas");
-        }
-
+        if (!streamCanvasRef.current) streamCanvasRef.current = document.createElement("canvas");
         const sCanvas = streamCanvasRef.current;
         const sCtx = sCanvas.getContext("2d");
-
         sCanvas.width = 240;
         sCanvas.height = 240;
 
@@ -66,36 +59,27 @@ export default function CameraPage() {
           sCtx.restore();
         }
 
-        // ✅ เปลี่ยนจาก Base64 เป็น Blob (Binary) เพื่อลด Payload 33% และลดการทำงาน CPU
         sCanvas.toBlob(async (blob) => {
           if (!blob) return;
-
           if (abortControllerRef.current) abortControllerRef.current.abort();
           abortControllerRef.current = new AbortController();
 
           try {
             await fetch(CLOUDFLARE_WORKER_URL, {
               method: "PUT",
-              body: blob, // ส่ง Binary ตรงๆ
+              body: blob,
               headers: { "Content-Type": "image/jpeg" },
               mode: 'cors',
               signal: abortControllerRef.current.signal
             });
             lastStreamTime.current = Date.now();
-          } catch (e) {
-            // Error handling
-          } finally {
-            isUploading.current = false;
-          }
-        }, "image/jpeg", 0.2);
-
-      } catch (error) {
-        isUploading.current = false;
-      }
+          } catch (e) { } finally { isUploading.current = false; }
+        }, "image/jpeg", 0.3);
+      } catch (error) { isUploading.current = false; }
     }
   };
 
-  // ---------------- FALL DETECTED (บันทึกหลักฐานลง Firebase) ----------------
+  // ---------------- HANDLE FALL (Firebase Sync) ----------------
   const handleFallDetected = async () => {
     if (isAlert) return;
     setIsAlert(true);
@@ -110,28 +94,22 @@ export default function CameraPage() {
       tempCanvas.height = mainCanvas.height;
 
       if (tempCtx) {
-        tempCtx.save();
-        if (facingMode === "user") {
-          tempCtx.scale(-1, 1);
-          tempCtx.drawImage(mainCanvas, -mainCanvas.width, 0, mainCanvas.width, mainCanvas.height);
-        } else {
-          tempCtx.drawImage(mainCanvas, 0, 0);
-        }
-        tempCtx.restore();
+        tempCtx.drawImage(mainCanvas, 0, 0);
         evidence = tempCanvas.toDataURL("image/jpeg", 0.6);
       }
     }
 
     try {
+      // อัปเดตสถานะหลัก
       await set(ref(db, "system/fall_event"), {
         detected: true,
         evidence,
         timestamp: serverTimestamp(),
       });
 
+      // บันทึกเข้าประวัติ
       const historyRef = ref(db, "history/falls");
-      const newHistoryEntry = push(historyRef);
-      await set(newHistoryEntry, {
+      await set(push(historyRef), {
         evidence,
         timestamp: serverTimestamp(),
         timeStr: new Date().toLocaleTimeString("th-TH"),
@@ -145,7 +123,7 @@ export default function CameraPage() {
 
   useEffect(() => {
     setMounted(true);
-    const interval = setInterval(streamLive, 50); // ตั้งให้ถี่ขึ้นได้เพราะ Binary เบามาก
+    const interval = setInterval(streamLive, 50);
     return () => {
       clearInterval(interval);
       if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -172,7 +150,7 @@ export default function CameraPage() {
 
         {/* CAMERA VIEW */}
         <div className={`relative aspect-video rounded-[2.5rem] overflow-hidden border-2 transition-all duration-500 bg-zinc-950 ${isAlert ? 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.2)]' : 'border-white/10'}`}>
-          <div className="w-full h-full transition-transform duration-500" style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)' }}>
+          <div className="w-full h-full">
             <FallDetector onFallDetected={handleFallDetected} facingMode={facingMode} />
           </div>
 
@@ -192,15 +170,6 @@ export default function CameraPage() {
                 </button>
               </div>
             </div>
-            <div className="flex justify-between items-end">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-blue-400">
-                  <Cpu size={12} />
-                  <span className="text-[10px] font-black uppercase tracking-tighter">AI_GUARD_V2</span>
-                </div>
-                <p className="text-[10px] font-mono opacity-70 text-zinc-400 uppercase tracking-widest">Status: Ready</p>
-              </div>
-            </div>
           </div>
           {isAlert && (
             <div className="absolute inset-0 bg-red-600/20 backdrop-blur-sm flex items-center justify-center z-50">
@@ -212,10 +181,10 @@ export default function CameraPage() {
         {/* FOOTER */}
         <div className="flex justify-between items-center px-4 py-3 bg-zinc-900/50 rounded-2xl border border-white/5">
           <div className="flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest">
-            <ShieldCheck size={14} className="text-blue-500" /> Security Protocol Active
+            <ShieldCheck size={14} className="text-blue-500" /> AI Security Protocol Active
           </div>
           <div className="text-[10px] font-bold text-zinc-500 font-mono italic">
-            {mounted ? new Date().toLocaleTimeString("en-GB") : "--:--:--"}
+            {new Date().toLocaleTimeString("en-GB")}
           </div>
         </div>
       </div>
