@@ -18,6 +18,8 @@ export default function FallDetector({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sessionRef = useRef<ort.InferenceSession | null>(null);
   const requestRef = useRef<number | null>(null);
+
+  // ปรับ Buffer ให้สั้นลงเพื่อความไว
   const fallCounter = useRef(0);
 
   const [isObjectAiReady, setIsObjectAiReady] = useState(false);
@@ -29,10 +31,7 @@ export default function FallDetector({
 
   const loadExternalAiScripts = () => {
     return new Promise((resolve) => {
-      if ((window as any).cocoSsd) {
-        resolve(true);
-        return;
-      }
+      if ((window as any).cocoSsd) { resolve(true); return; }
       const tfjs = document.createElement("script");
       tfjs.src = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs";
       tfjs.onload = () => {
@@ -52,16 +51,12 @@ export default function FallDetector({
           executionProviders: ["wasm"],
         });
         sessionRef.current = sess;
-
         await loadExternalAiScripts();
         const model = await (window as any).cocoSsd.load();
         cocoSsdModelRef.current = model;
         setIsObjectAiReady(true);
         setLoading(false);
-      } catch (e) {
-        console.error(e);
-        setError("ไม่สามารถโหลดระบบ AI ได้");
-      }
+      } catch (e) { setError("AI Load Error"); }
     };
     initAI();
     return () => {
@@ -70,15 +65,10 @@ export default function FallDetector({
     };
   }, []);
 
-  useEffect(() => {
-    if (!loading) startCamera();
-  }, [facingMode, loading]);
+  useEffect(() => { if (!loading) startCamera(); }, [facingMode, loading]);
 
   const stopCamera = () => {
-    if (requestRef.current) {
-      cancelAnimationFrame(requestRef.current);
-      requestRef.current = null;
-    }
+    if (requestRef.current) { cancelAnimationFrame(requestRef.current); requestRef.current = null; }
     if (videoRef.current?.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach((track) => track.stop());
@@ -99,10 +89,7 @@ export default function FallDetector({
           if (!requestRef.current) requestRef.current = requestAnimationFrame(detect);
         };
       }
-    } catch (err) {
-      console.error("Camera error:", err);
-      setError("ไม่สามารถเข้าถึงกล้องได้");
-    }
+    } catch (err) { setError("Camera Error"); }
   };
 
   const detect = async () => {
@@ -134,16 +121,16 @@ export default function FallDetector({
       const data = output.output0.data as Float32Array;
       let foundFallInFrame = false;
 
-      // Logic เช็คคนยืนเพื่อกันพลาด (Veto Logic)
-      const isSomeoneStanding = objectPredictions.some((p: any) => {
-        if (p.class === "person" && p.score > 0.6) {
-          const [,, w, h] = p.bbox;
-          return h > w * 1.2; 
+      // ปรับปรุง Veto Logic: กรองคนยืนให้ฉลาดขึ้น
+      const isStrongStand = objectPredictions.some((p: any) => {
+        if (p.class === "person" && p.score > 0.75) {
+          const [, , w, h] = p.bbox;
+          return h > w * 1.5; // ยืนชัดเจนจริงๆ เท่านั้นถึงจะ Veto
         }
         return false;
       });
 
-      // วาด Mirror Preview
+      // Mirror Preview
       ctx.clearRect(0, 0, size, size);
       ctx.save();
       if (facingMode === "user") {
@@ -154,54 +141,58 @@ export default function FallDetector({
       }
       ctx.restore();
 
-      // วาดกรอบ Fall (ONNX)
-      for (let i = 0; i < 8400; i++) {
-        const confidence = data[4 * 8400 + i];
-        if (confidence > 0.85) {
-          const x = data[0 * 8400 + i];
-          const y = data[1 * 8400 + i];
-          const w = data[2 * 8400 + i];
-          const h = data[3 * 8400 + i];
+      // ONNX Box Processing
+      const NUM_BOXES = 8400;
+      const TARGET_CONF = 0.65; // ลด Confidence ลงเพื่อให้จับได้ไวขึ้น
 
-          if (w > h * 1.2) {
+      for (let i = 0; i < NUM_BOXES; i++) {
+        const confidence = data[4 * NUM_BOXES + i];
+        if (confidence > TARGET_CONF) {
+          const x = data[0 * NUM_BOXES + i];
+          const y = data[1 * NUM_BOXES + i];
+          const w = data[2 * NUM_BOXES + i];
+          const h = data[3 * NUM_BOXES + i];
+
+          // เช็คสัดส่วนกล่อง (คนล้มต้องกว้างกว่าสูง)
+          if (w > h * 1.1) {
+            foundFallInFrame = true;
             ctx.strokeStyle = "#FF3131";
             ctx.lineWidth = 6;
             let drawX = facingMode === "user" ? size - x - w / 2 : x - w / 2;
             ctx.strokeRect(drawX, y - h / 2, w, h);
-            foundFallInFrame = true;
             break;
           }
         }
       }
 
-      // วาดกรอบ คน/สัตว์ (COCO-SSD)
+      // วาด COCO-SSD (Person/Animal)
       objectPredictions.forEach((pred: any) => {
         const [x, y, width, height] = pred.bbox;
-        const label = pred.class;
-        if (["person", "dog", "cat"].includes(label)) {
-          ctx.strokeStyle = label === "person" ? "#00FF00" : "#00FFFF";
-          ctx.lineWidth = 3;
+        if (["person", "dog", "cat"].includes(pred.class)) {
+          ctx.strokeStyle = pred.class === "person" ? "#00FF00" : "#00FFFF";
+          ctx.lineWidth = 2;
           let drawX = facingMode === "user" ? size - x - width : x;
           ctx.strokeRect(drawX, y, width, height);
-          ctx.fillStyle = ctx.strokeStyle;
-          ctx.font = "bold 16px Arial";
-          ctx.fillText(`${label.toUpperCase()}`, drawX, y > 20 ? y - 5 : 20);
         }
       });
 
-      // Decision
-      if (foundFallInFrame && !isSomeoneStanding) {
-        fallCounter.current += 1;
-        if (fallCounter.current >= 15) { 
+      // Decision Bridge
+      if (foundFallInFrame) {
+        // ถ้าโมเดลหลักเจอการล้ม และ COCO-SSD ไม่ได้ค้านแบบมั่นใจมากว่ายืน
+        if (!isStrongStand) {
+          fallCounter.current += 1;
+        }
+
+        // ลดเหลือ 6 เฟรม (~0.3 วินาที) เพื่อให้แจ้งเตือนทันเหตุการณ์
+        if (fallCounter.current >= 6) {
           onFallDetected();
           fallCounter.current = 0;
         }
       } else {
-        fallCounter.current = Math.max(0, fallCounter.current - 2);
+        // ค่อยๆ ลดลง กัน Error ชั่วคราว
+        fallCounter.current = Math.max(0, fallCounter.current - 1);
       }
-    } catch (e) {
-      console.error("Inference Error:", e);
-    }
+    } catch (e) { console.error(e); }
 
     requestRef.current = requestAnimationFrame(detect);
   };
@@ -212,17 +203,10 @@ export default function FallDetector({
       <canvas ref={canvasRef} width={size} height={size} className="w-full h-full object-contain" />
       {loading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-md z-50">
-          <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
-          <p className="text-white text-xs font-black tracking-widest animate-pulse uppercase">
-            Initializing AI Security Core...
-          </p>
-        </div>
-      )}
-      {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/80 text-red-500 text-sm font-bold p-6 text-center z-50">
-          {error}
+          <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-white text-[10px] font-bold tracking-widest uppercase">Initializing Core...</p>
         </div>
       )}
     </div>
   );
-}  
+}
