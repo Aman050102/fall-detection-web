@@ -123,12 +123,8 @@ export default function FallDetector({
     });
     if (!ctx) return;
 
-    // ==============================
-    // 1️⃣ ส่วนประมวลผล Fall Detection 
-    // ==============================
-    ctx.clearRect(0, 0, size, size);
+    // 1️⃣ เตรียมข้อมูลภาพ (เหมือนเดิม)
     ctx.drawImage(videoRef.current, 0, 0, size, size);
-
     const imgData = ctx.getImageData(0, 0, size, size).data;
 
     const input = new Float32Array(3 * size * size);
@@ -139,24 +135,26 @@ export default function FallDetector({
     }
 
     try {
-      // รันโมเดล Fall Detection เดิม
-      const inputTensor = new ort.Tensor("float32", input, [1, 3, size, size]);
-      const output = await sessionRef.current.run({ images: inputTensor });
+      // รัน AI ทั้งคู่ขนานกัน
+      const [output, objectPredictions] = await Promise.all([
+        sessionRef.current.run({ images: new ort.Tensor("float32", input, [1, 3, size, size]) }),
+        isObjectAiReady ? cocoSsdModelRef.current.detect(videoRef.current) : []
+      ]);
+
       const data = output.output0.data as Float32Array;
-
-      // รันโมเดลตรวจจับ คน/สัตว์ ที่เพิ่มเข้ามา
-      let objectPredictions = [];
-      if (isObjectAiReady && cocoSsdModelRef.current) {
-        objectPredictions = await cocoSsdModelRef.current.detect(videoRef.current);
-      }
-
       let foundFallInFrame = false;
 
-      // ==============================
-      // 2️⃣ ส่วนแสดงผล Mirror และวาดกรอบ (Preview)
-      // ==============================
-      ctx.clearRect(0, 0, size, size);
+      // --- ตรวจเช็คว่ามี "คนยืน" หรือไม่ (เพื่อยับยั้ง False Positive) ---
+      const isSomeoneStanding = objectPredictions.some((p: any) => {
+        if (p.class === 'person' && p.score > 0.6) {
+          const [,, w, h] = p.bbox;
+          return h > w * 1.2; // ถ้าสูงกว่ากว้าง 1.2 เท่า ถือว่า "ยืนอยู่"
+        }
+        return false;
+      });
 
+      // 2️⃣ แสดงผล Mirror และวาดกรอบ
+      ctx.clearRect(0, 0, size, size);
       ctx.save();
       if (facingMode === "user") {
         ctx.scale(-1, 1);
@@ -166,42 +164,35 @@ export default function FallDetector({
       }
       ctx.restore();
 
-      // --- วาดกรอบตรวจจับการล้ม (ของเดิม) ---
+      // --- วาดกรอบตรวจจับการล้ม (ปรับปรุง Logic) ---
       for (let i = 0; i < 8400; i++) {
-        if (data[4 * 8400 + i] > 0.7) {
+        const confidence = data[4 * 8400 + i];
+        if (confidence > 0.85) { // เพิ่มความมั่นใจเป็น 0.85
           const x = data[0 * 8400 + i];
           const y = data[1 * 8400 + i];
           const w = data[2 * 8400 + i];
           const h = data[3 * 8400 + i];
 
-          ctx.strokeStyle = "#FF3131"; // สีแดงสำหรับล้ม
-          ctx.lineWidth = 6;
-
-          let drawX = x - w / 2;
-          if (facingMode === "user") {
-            drawX = size - x - w / 2;
+          // เช็คสัดส่วน: คนล้มต้องกว้างกว่าสูง
+          if (w > h * 1.2) {
+            ctx.strokeStyle = "#FF3131"; 
+            ctx.lineWidth = 6;
+            let drawX = facingMode === "user" ? size - x - w / 2 : x - w / 2;
+            ctx.strokeRect(drawX, y - h / 2, w, h);
+            foundFallInFrame = true;
+            break;
           }
-
-          ctx.strokeRect(drawX, y - h / 2, w, h);
-          foundFallInFrame = true;
-          break;
         }
       }
 
-      // --- วาดกรอบตรวจจับ คน และ สัตว์ (ที่เพิ่มเข้ามา) ---
+      // --- วาดกรอบ คน/สัตว์ (เหมือนเดิม) ---
       objectPredictions.forEach((pred: any) => {
         const [x, y, width, height] = pred.bbox;
         const label = pred.class;
-
         if (['person', 'dog', 'cat'].includes(label)) {
           ctx.strokeStyle = label === 'person' ? "#00FF00" : "#00FFFF";
           ctx.lineWidth = 3;
-
-          let drawX = x;
-          if (facingMode === "user") {
-            drawX = size - x - width;
-          }
-
+          let drawX = facingMode === "user" ? size - x - width : x;
           ctx.strokeRect(drawX, y, width, height);
           ctx.fillStyle = ctx.strokeStyle;
           ctx.font = "bold 16px Arial";
@@ -209,13 +200,19 @@ export default function FallDetector({
         }
       });
 
-      if (foundFallInFrame) {
-        // ลดเหลือ 5 เฟรม (ประมาณ 0.2 วินาที) เพื่อความรวดเร็วสูงสุด
+      // 3️⃣ ตัดสินใจแจ้งเตือน (Decision Logic)
+      if (foundFallInFrame && !isSomeoneStanding) {
         fallCounter.current += 1;
-        if (fallCounter.current >= 5) onFallDetected();
+        // ปรับเป็น 10 เฟรม (~0.5 วินาที) เพื่อความชัวร์
+        if (fallCounter.current >= 10) {
+          onFallDetected();
+          fallCounter.current = 0;
+        }
       } else {
-        fallCounter.current = Math.max(0, fallCounter.current - 1);
+        // ถ้าไม่เจอ หรือมีคนยืนประคองอยู่ ให้ Reset เร็วขึ้น (ทีละ 2)
+        fallCounter.current = Math.max(0, fallCounter.current - 2);
       }
+
     } catch (e) {
       console.error("Inference Error:", e);
     }
