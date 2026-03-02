@@ -63,14 +63,12 @@ export default function FallDetector({
         const model = await (window as any).cocoSsd.load();
         cocoSsdModelRef.current = model;
         setIsObjectAiReady(true);
-
         setLoading(false);
       } catch (e) {
         console.error(e);
         setError("ไม่สามารถโหลดระบบ AI ได้");
       }
     };
-
     initAI();
     return () => {
       stopCamera();
@@ -99,21 +97,13 @@ export default function FallDetector({
       stopCamera();
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode,
-          width: { ideal: size },
-          height: { ideal: size },
-          aspectRatio: 1,
-        },
+        video: { facingMode, width: { ideal: size }, height: { ideal: size }, aspectRatio: 1 },
       });
-
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play();
-          if (!requestRef.current) {
-            requestRef.current = requestAnimationFrame(detect);
-          }
+          if (!requestRef.current) requestRef.current = requestAnimationFrame(detect);
         };
       }
     } catch (err) {
@@ -123,12 +113,7 @@ export default function FallDetector({
   };
 
   const detect = async () => {
-    if (
-      !videoRef.current ||
-      !canvasRef.current ||
-      !sessionRef.current ||
-      videoRef.current.paused
-    ) {
+    if (!videoRef.current || !canvasRef.current || !sessionRef.current || videoRef.current.paused) {
       requestRef.current = requestAnimationFrame(detect);
       return;
     }
@@ -225,6 +210,7 @@ export default function FallDetector({
       });
 
       if (foundFallInFrame) {
+        // ลดเหลือ 5 เฟรม (ประมาณ 0.2 วินาที) เพื่อความรวดเร็วสูงสุด
         fallCounter.current += 1;
         if (fallCounter.current >= 5) onFallDetected();
       } else {
