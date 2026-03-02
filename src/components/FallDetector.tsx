@@ -2,8 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as ort from "onnxruntime-web";
 
-ort.env.wasm.wasmPaths =
-  "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
 ort.env.logLevel = "error";
 
 interface FallDetectorProps {
@@ -21,16 +20,13 @@ export default function FallDetector({
   const requestRef = useRef<number | null>(null);
   const fallCounter = useRef(0);
 
-  // --- ส่วนที่เพิ่มเข้ามา: สำหรับตรวจจับ คน และ สัตว์ ---
   const [isObjectAiReady, setIsObjectAiReady] = useState(false);
   const cocoSsdModelRef = useRef<any>(null);
-
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const size = 640;
 
-  // ฟังก์ชันโหลด Script ภายนอกเพื่อป้องกัน Build Error (Module not found)
   const loadExternalAiScripts = () => {
     return new Promise((resolve) => {
       if ((window as any).cocoSsd) {
@@ -52,13 +48,11 @@ export default function FallDetector({
   useEffect(() => {
     const initAI = async () => {
       try {
-        // 1. โหลดระบบ Fall Detection เดิม (ห้ามตัด)
         const sess = await ort.InferenceSession.create("/model/best.onnx", {
           executionProviders: ["wasm"],
         });
         sessionRef.current = sess;
 
-        // 2. โหลดระบบตรวจจับ คน/สัตว์ เพิ่มเติม (ที่สั่งเพิ่ม)
         await loadExternalAiScripts();
         const model = await (window as any).cocoSsd.load();
         cocoSsdModelRef.current = model;
@@ -95,7 +89,6 @@ export default function FallDetector({
   const startCamera = async () => {
     try {
       stopCamera();
-
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode, width: { ideal: size }, height: { ideal: size }, aspectRatio: 1 },
       });
@@ -118,12 +111,9 @@ export default function FallDetector({
       return;
     }
 
-    const ctx = canvasRef.current.getContext("2d", {
-      willReadFrequently: true,
-    });
+    const ctx = canvasRef.current.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
 
-    // 1️⃣ เตรียมข้อมูลภาพ (เหมือนเดิม)
     ctx.drawImage(videoRef.current, 0, 0, size, size);
     const imgData = ctx.getImageData(0, 0, size, size).data;
 
@@ -135,25 +125,25 @@ export default function FallDetector({
     }
 
     try {
-      // รัน AI ทั้งคู่ขนานกัน
+      const inputTensor = new ort.Tensor("float32", input, [1, 3, size, size]);
       const [output, objectPredictions] = await Promise.all([
-        sessionRef.current.run({ images: new ort.Tensor("float32", input, [1, 3, size, size]) }),
+        sessionRef.current.run({ images: inputTensor }),
         isObjectAiReady ? cocoSsdModelRef.current.detect(videoRef.current) : []
       ]);
 
       const data = output.output0.data as Float32Array;
       let foundFallInFrame = false;
 
-      // --- ตรวจเช็คว่ามี "คนยืน" หรือไม่ (เพื่อยับยั้ง False Positive) ---
+      // Logic เช็คคนยืนเพื่อกันพลาด (Veto Logic)
       const isSomeoneStanding = objectPredictions.some((p: any) => {
-        if (p.class === 'person' && p.score > 0.6) {
+        if (p.class === "person" && p.score > 0.6) {
           const [,, w, h] = p.bbox;
-          return h > w * 1.2; // ถ้าสูงกว่ากว้าง 1.2 เท่า ถือว่า "ยืนอยู่"
+          return h > w * 1.2; 
         }
         return false;
       });
 
-      // 2️⃣ แสดงผล Mirror และวาดกรอบ
+      // วาด Mirror Preview
       ctx.clearRect(0, 0, size, size);
       ctx.save();
       if (facingMode === "user") {
@@ -164,18 +154,17 @@ export default function FallDetector({
       }
       ctx.restore();
 
-      // --- วาดกรอบตรวจจับการล้ม (ปรับปรุง Logic) ---
+      // วาดกรอบ Fall (ONNX)
       for (let i = 0; i < 8400; i++) {
         const confidence = data[4 * 8400 + i];
-        if (confidence > 0.85) { // เพิ่มความมั่นใจเป็น 0.85
+        if (confidence > 0.85) {
           const x = data[0 * 8400 + i];
           const y = data[1 * 8400 + i];
           const w = data[2 * 8400 + i];
           const h = data[3 * 8400 + i];
 
-          // เช็คสัดส่วน: คนล้มต้องกว้างกว่าสูง
           if (w > h * 1.2) {
-            ctx.strokeStyle = "#FF3131"; 
+            ctx.strokeStyle = "#FF3131";
             ctx.lineWidth = 6;
             let drawX = facingMode === "user" ? size - x - w / 2 : x - w / 2;
             ctx.strokeRect(drawX, y - h / 2, w, h);
@@ -185,12 +174,12 @@ export default function FallDetector({
         }
       }
 
-      // --- วาดกรอบ คน/สัตว์ (เหมือนเดิม) ---
+      // วาดกรอบ คน/สัตว์ (COCO-SSD)
       objectPredictions.forEach((pred: any) => {
         const [x, y, width, height] = pred.bbox;
         const label = pred.class;
-        if (['person', 'dog', 'cat'].includes(label)) {
-          ctx.strokeStyle = label === 'person' ? "#00FF00" : "#00FFFF";
+        if (["person", "dog", "cat"].includes(label)) {
+          ctx.strokeStyle = label === "person" ? "#00FF00" : "#00FFFF";
           ctx.lineWidth = 3;
           let drawX = facingMode === "user" ? size - x - width : x;
           ctx.strokeRect(drawX, y, width, height);
@@ -200,19 +189,16 @@ export default function FallDetector({
         }
       });
 
-      // 3️⃣ ตัดสินใจแจ้งเตือน (Decision Logic)
+      // Decision
       if (foundFallInFrame && !isSomeoneStanding) {
         fallCounter.current += 1;
-        // ปรับเป็น 10 เฟรม (~0.5 วินาที) เพื่อความชัวร์
-        if (fallCounter.current >= 10) {
+        if (fallCounter.current >= 15) { 
           onFallDetected();
           fallCounter.current = 0;
         }
       } else {
-        // ถ้าไม่เจอ หรือมีคนยืนประคองอยู่ ให้ Reset เร็วขึ้น (ทีละ 2)
         fallCounter.current = Math.max(0, fallCounter.current - 2);
       }
-
     } catch (e) {
       console.error("Inference Error:", e);
     }
@@ -223,13 +209,7 @@ export default function FallDetector({
   return (
     <div className="relative w-full h-full bg-black overflow-hidden">
       <video ref={videoRef} playsInline muted className="hidden" />
-      <canvas
-        ref={canvasRef}
-        width={size}
-        height={size}
-        className="w-full h-full object-contain"
-      />
-
+      <canvas ref={canvasRef} width={size} height={size} className="w-full h-full object-contain" />
       {loading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-md z-50">
           <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
@@ -238,7 +218,6 @@ export default function FallDetector({
           </p>
         </div>
       )}
-
       {error && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/80 text-red-500 text-sm font-bold p-6 text-center z-50">
           {error}
@@ -246,4 +225,4 @@ export default function FallDetector({
       )}
     </div>
   );
-}
+}  
