@@ -4,7 +4,7 @@ import Link from "next/link";
 import { db } from "@/lib/firebase";
 import { ref, onValue, set, query, limitToLast, remove, off } from "firebase/database";
 import { useEmergency } from "@/hooks/useEmergency";
-import { ShieldAlert, Activity, History, Trash2, Home } from "lucide-react";
+import { ShieldAlert, Activity, History, Trash2, Home, X } from "lucide-react"; // เพิ่ม X สำหรับปุ่มปิด
 
 const CLOUDFLARE_WORKER_URL = "https://cctv-stream-worker.aman02012548.workers.dev";
 
@@ -18,22 +18,21 @@ export default function MonitorPage() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isOffline, setIsOffline] = useState(false);
 
+  // เพิ่ม State สำหรับดูรูปขยาย
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+
   const lastUpdateRef = useRef<number>(Date.now());
   const prevEmergencyRef = useRef(false);
   const { triggerAlarm, requestPermission, stopAlarm } = useEmergency();
 
   useEffect(() => {
     requestPermission();
-
     let isMounted = true;
 
-    //  แก้ไข: ใช้เทคนิค Double Buffering + RequestAnimationFrame เพื่อลด Delay สะสม
     const fetchLiveStream = () => {
       if (!isMounted) return;
-
       const timestamp = Date.now();
       const img = new Image();
-      // บังคับโหลดภาพใหม่ด้วย timestamp
       img.src = `${CLOUDFLARE_WORKER_URL}?t=${timestamp}`;
 
       img.onload = () => {
@@ -41,9 +40,6 @@ export default function MonitorPage() {
         setLiveFrame(img.src);
         lastUpdateRef.current = Date.now();
         setIsOffline(false);
-
-        // ใช้ requestAnimationFrame เพื่อให้การเปลี่ยนภาพสัมพันธ์กับ refresh rate ของจอ
-        // และรอให้ภาพโหลดเสร็จก่อนค่อยเริ่มขอภาพถัดไป เพื่อไม่ให้เกิด Network Congestion
         requestAnimationFrame(() => {
           setTimeout(fetchLiveStream, 10);
         });
@@ -102,6 +98,23 @@ export default function MonitorPage() {
 
   return (
     <div className={`min-h-screen transition-all duration-700 ${isEmergency ? "bg-red-950" : "bg-[#050505]"} text-zinc-100`}>
+      {/* ส่วน Modal สำหรับดูรูปขยาย */}
+      {selectedImage && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 cursor-zoom-out"
+          onClick={() => setSelectedImage(null)}
+        >
+          <button className="absolute top-6 right-6 p-3 bg-white/10 rounded-full hover:bg-white/20 transition-all">
+            <X size={24} />
+          </button>
+          <img
+            src={selectedImage}
+            className="max-w-full max-h-full rounded-2xl shadow-2xl border border-white/10 object-contain animate-in zoom-in-95 duration-300"
+            alt="Enlarged Evidence"
+          />
+        </div>
+      )}
+
       <header className="border-b border-white/5 bg-black/40 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-4">
@@ -120,7 +133,14 @@ export default function MonitorPage() {
         <div className="lg:col-span-8 space-y-6">
           {isEmergency && (
             <section className="bg-red-600 rounded-[2.5rem] p-6 flex flex-col md:flex-row gap-6 items-center transition-all">
-              {evidence && <img src={evidence} className="w-48 aspect-square rounded-2xl object-cover shadow-2xl" alt="Evidence" />}
+              {evidence && (
+                <img
+                  src={evidence}
+                  className="w-48 aspect-square rounded-2xl object-cover shadow-2xl cursor-pointer hover:scale-105 transition-transform"
+                  alt="Evidence"
+                  onClick={() => setSelectedImage(evidence)} // คลิกเพื่อดูรูปใหญ่
+                />
+              )}
               <div className="flex-1 text-center md:text-left">
                 <h2 className="text-3xl font-black uppercase italic">Fall Event Detected</h2>
                 <p className="text-sm font-bold opacity-80 mt-1">Alert Time: {fallTime ?? "-"}</p>
@@ -147,7 +167,13 @@ export default function MonitorPage() {
             <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
               {history.map((item) => (
                 <div key={item.id} className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5 hover:bg-white/10 transition-all group">
-                  {item.evidence && <img src={item.evidence} className="w-16 h-16 rounded-xl object-cover shadow-lg" />}
+                  {item.evidence && (
+                    <img
+                      src={item.evidence}
+                      className="w-16 h-16 rounded-xl object-cover shadow-lg cursor-pointer hover:ring-2 ring-blue-500 transition-all"
+                      onClick={() => setSelectedImage(item.evidence!)} // คลิกเพื่อดูรูปใหญ่
+                    />
+                  )}
                   <div className="flex-1"><p className="text-[11px] font-bold text-zinc-200">{item.timeStr ?? "-"}</p><p className="text-[9px] uppercase font-black text-red-500/80 mt-1">Log Saved</p></div>
                   <button onClick={() => handleDeleteHistory(item.id)} className="p-2 text-zinc-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Trash2 size={18} /></button>
                 </div>
