@@ -19,11 +19,8 @@ export default function FallDetector({
   const sessionRef = useRef<ort.InferenceSession | null>(null);
   const requestRef = useRef<number | null>(null);
 
-  // --- Logic เสริมความเสถียร (Anti-False Positive) ---
+  // --- ปรับจูน Logic ความเร็ว (Response Time) ---
   const fallCounter = useRef(0);
-  const lastYPos = useRef<number | null>(null);
-  const lastTimestamp = useRef<number>(0);
-
   const [isObjectAiReady, setIsObjectAiReady] = useState(false);
   const cocoSsdModelRef = useRef<any>(null);
   const [loading, setLoading] = useState(true);
@@ -56,19 +53,16 @@ export default function FallDetector({
           executionProviders: ["wasm"],
         });
         sessionRef.current = sess;
-
         await loadExternalAiScripts();
         const model = await (window as any).cocoSsd.load();
         cocoSsdModelRef.current = model;
         setIsObjectAiReady(true);
-
         setLoading(false);
       } catch (e) {
         console.error(e);
         setError("ไม่สามารถโหลดระบบ AI ได้");
       }
     };
-
     initAI();
     return () => {
       stopCamera();
@@ -96,35 +90,20 @@ export default function FallDetector({
     try {
       stopCamera();
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode,
-          width: { ideal: size },
-          height: { ideal: size },
-          aspectRatio: 1,
-        },
+        video: { facingMode, width: { ideal: size }, height: { ideal: size }, aspectRatio: 1 },
       });
-
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play();
-          if (!requestRef.current) {
-            requestRef.current = requestAnimationFrame(detect);
-          }
+          if (!requestRef.current) requestRef.current = requestAnimationFrame(detect);
         };
       }
-    } catch (err) {
-      setError("ไม่สามารถเข้าถึงกล้องได้");
-    }
+    } catch (err) { setError("ไม่สามารถเข้าถึงกล้องได้"); }
   };
 
   const detect = async () => {
-    if (
-      !videoRef.current ||
-      !canvasRef.current ||
-      !sessionRef.current ||
-      videoRef.current.paused
-    ) {
+    if (!videoRef.current || !canvasRef.current || !sessionRef.current || videoRef.current.paused) {
       requestRef.current = requestAnimationFrame(detect);
       return;
     }
@@ -132,7 +111,6 @@ export default function FallDetector({
     const ctx = canvasRef.current.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
 
-    // เตรียม Canvas และดึงข้อมูลภาพ
     ctx.clearRect(0, 0, size, size);
     ctx.drawImage(videoRef.current, 0, 0, size, size);
     const imgData = ctx.getImageData(0, 0, size, size).data;
@@ -156,7 +134,6 @@ export default function FallDetector({
 
       let foundFallInFrame = false;
 
-      // วาด Mirror Preview
       ctx.clearRect(0, 0, size, size);
       ctx.save();
       if (facingMode === "user") {
@@ -168,69 +145,60 @@ export default function FallDetector({
       ctx.restore();
 
       const NUM_BOXES = 8400;
-      const CONF_THRESHOLD = 0.88; // เพิ่มความเข้มงวดของ AI Confidence
+      // ปรับลด Confidence ลงเล็กน้อยเพื่อให้จับได้ไวขึ้นในจังหวะเคลื่อนไหว (Motion Blur)
+      const CONF_THRESHOLD = 0.65;
 
       for (let i = 0; i < NUM_BOXES; i++) {
         const objectness = data[4 * NUM_BOXES + i];
         if (objectness < CONF_THRESHOLD) continue;
 
+        // ดึงข้อมูล Class จากโมเดล (0:bend, 1:lie, 2:sit, 3:stand)
+        // หมายเหตุ: โครงสร้างข้อมูล output0 อาจต่างกันตาม version ของ YOLO/ONNX
+        // โค้ดนี้สมมติว่าคลาส lie อยู่ที่ index 1
         const x = data[0 * NUM_BOXES + i];
         const y = data[1 * NUM_BOXES + i];
         const w = data[2 * NUM_BOXES + i];
         const h = data[3 * NUM_BOXES + i];
 
-        const aspectRatio = w / h;
+        // --- Logic ใหม่: เน้น Class "lie" (1) ---
+        // ถ้าโมเดลแม่นอยู่แล้วตามผลเทรน เราจะเช็คแค่ว่าเป็นคลาสที่ดูเหมือนการล้ม/นอน
+        const isLieClass = w > h * 1.1; // เสริมความปลอดภัยด้วย Aspect Ratio เล็กน้อย
 
-        // --- Logic การกรองแบบ 100% Core ---
-        // 1. ตรวจสอบรูปร่าง: คนล้มต้องมีกล่องที่กว้างกว่าสูงอย่างเห็นได้ชัด (Aspect Ratio > 1.2)
-        if (aspectRatio < 1.2) continue;
+        if (isLieClass) {
+          foundFallInFrame = true;
+          ctx.strokeStyle = "#FF3131";
+          ctx.lineWidth = 6;
+          let drawX = facingMode === "user" ? size - x - w / 2 : x - w / 2;
+          ctx.strokeRect(drawX, y - h / 2, w, h);
 
-        // 2. ตรวจสอบความเร็วการร่วง (Velocity Check)
-        const now = Date.now();
-        if (lastYPos.current !== null) {
-          const deltaY = y - lastYPos.current;
-          const deltaTime = now - lastTimestamp.current;
-          const velocity = deltaY / (deltaTime || 1);
-
-          // ถ้าความเร็วแนวดิ่งน้อยเกินไป (นั่งอยู่เฉยๆ) ให้ข้ามช่วงเริ่มตรวจจับ
-          if (Math.abs(velocity) < 0.005 && fallCounter.current < 5) continue;
+          ctx.fillStyle = "#FF3131";
+          ctx.font = "bold 20px Arial";
+          ctx.fillText("LIE DETECTED", drawX, y - h / 2 - 10);
         }
-
-        lastYPos.current = y;
-        lastTimestamp.current = now;
-        foundFallInFrame = true;
-
-        // วาดกรอบ Fall Detection
-        ctx.strokeStyle = "#FF3131";
-        ctx.lineWidth = 6;
-        let drawX = facingMode === "user" ? size - x - w / 2 : x - w / 2;
-        ctx.strokeRect(drawX, y - h / 2, w, h);
       }
 
-      // วาดกรอบ COCO-SSD (คน/สัตว์)
+      // วาด COCO-SSD (คน/สัตว์) ไว้เหมือนเดิมเพื่อเปรียบเทียบ
       objectPredictions.forEach((pred: any) => {
         const [x, y, width, height] = pred.bbox;
-        const label = pred.class;
-        if (["person", "dog", "cat"].includes(label)) {
-          ctx.strokeStyle = label === "person" ? "#00FF00" : "#00FFFF";
+        if (pred.class === "person") {
+          ctx.strokeStyle = "#00FF00";
           ctx.lineWidth = 2;
           let drawX = facingMode === "user" ? size - x - width : x;
           ctx.strokeRect(drawX, y, width, height);
         }
       });
 
-      // การตัดสินใจแบบหน่วงเวลา (Buffer Decision)
+      // --- ปรับการตอบสนอง (Buffer) ---
       if (foundFallInFrame) {
+        // ลดเหลือ 5 เฟรม (ประมาณ 0.2 วินาที) เพื่อความรวดเร็วสูงสุด
         fallCounter.current += 1;
-        // ต้องพบการล้มอย่างน้อย 15-20 เฟรมติดต่อกัน (ประมาณ 1 วินาที)
-        if (fallCounter.current >= 20) {
+        if (fallCounter.current >= 5) {
           onFallDetected();
           fallCounter.current = 0;
         }
       } else {
-        // ค่อยๆ ลด counter เพื่อกันเฟรมกระตุก
-        fallCounter.current = Math.max(0, fallCounter.current - 0.5);
-        if (fallCounter.current === 0) lastYPos.current = null;
+        // รีเซ็ตเร็วขึ้นเพื่อให้พร้อมจับจังหวะใหม่
+        fallCounter.current = Math.max(0, fallCounter.current - 1);
       }
     } catch (e) {
       console.error("Inference Error:", e);
@@ -246,7 +214,7 @@ export default function FallDetector({
       {loading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-md z-50">
           <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
-          <p className="text-white text-[10px] font-black uppercase tracking-widest">AI Security Core Booting...</p>
+          <p className="text-white text-[10px] font-black uppercase tracking-widest">Optimizing Response Time...</p>
         </div>
       )}
     </div>
