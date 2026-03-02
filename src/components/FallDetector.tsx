@@ -52,13 +52,13 @@ export default function FallDetector({
   useEffect(() => {
     const initAI = async () => {
       try {
-        // 1. โหลดระบบ Fall Detection เดิม (ห้ามตัด)
+        // 1. โหลดระบบ Fall Detection เดิม 
         const sess = await ort.InferenceSession.create("/model/best.onnx", {
           executionProviders: ["wasm"],
         });
         sessionRef.current = sess;
 
-        // 2. โหลดระบบตรวจจับ คน/สัตว์ เพิ่มเติม (ที่สั่งเพิ่ม)
+        // 2. โหลดระบบตรวจจับ คน/สัตว์ เพิ่มเติม 
         await loadExternalAiScripts();
         const model = await (window as any).cocoSsd.load();
         cocoSsdModelRef.current = model;
@@ -139,7 +139,7 @@ export default function FallDetector({
     if (!ctx) return;
 
     // ==============================
-    // 1️⃣ ส่วนประมวลผล Fall Detection (ของเดิมเป๊ะๆ ห้ามแก้)
+    // 1️⃣ ส่วนประมวลผล Fall Detection
     // ==============================
     ctx.clearRect(0, 0, size, size);
     ctx.drawImage(videoRef.current, 0, 0, size, size);
@@ -181,27 +181,47 @@ export default function FallDetector({
       }
       ctx.restore();
 
-      // --- วาดกรอบตรวจจับการล้ม (ของเดิม) ---
-      for (let i = 0; i < 8400; i++) {
-        if (data[4 * 8400 + i] > 0.7) {
-          const x = data[0 * 8400 + i];
-          const y = data[1 * 8400 + i];
-          const w = data[2 * 8400 + i];
-          const h = data[3 * 8400 + i];
+      // --- วาดกรอบตรวจจับการล้ม  ---
+      const NUM_BOXES = 8400;
+      const NUM_CLASSES = 1; // ถ้า model มี 1 class = fall
+      const CONF_THRESHOLD = 0.7;
 
-          ctx.strokeStyle = "#FF3131"; // สีแดงสำหรับล้ม
-          ctx.lineWidth = 6;
+      for (let i = 0; i < NUM_BOXES; i++) {
+        const objectness = data[4 * NUM_BOXES + i];
+        if (objectness < CONF_THRESHOLD) continue;
 
-          let drawX = x - w / 2;
-          if (facingMode === "user") {
-            drawX = size - x - w / 2;
-          }
+        let classScore = 1;
+        let classId = 0;
 
-          ctx.strokeRect(drawX, y - h / 2, w, h);
-          foundFallInFrame = true;
-          break;
+        if (NUM_CLASSES > 1) {
+          classScore = data[(5 + classId) * NUM_BOXES + i];
         }
+
+        const finalScore = objectness * classScore;
+        if (finalScore < 0.9) continue;
+
+        const x = data[0 * NUM_BOXES + i];
+        const y = data[1 * NUM_BOXES + i];
+        const w = data[2 * NUM_BOXES + i];
+        const h = data[3 * NUM_BOXES + i];
+        // ===== กันจับ "ยืน" เป็น "ล้ม" =====
+        const aspectRatio = w / h;
+
+        // ถ้ากล่องสูงกว่ากว้าง = น่าจะเป็นคนยืน → ข้าม
+        if (aspectRatio < 1) continue;
+
+        ctx.strokeStyle = "#FF3131";
+        ctx.lineWidth = 6;
+
+        let drawX = x - w / 2;
+        if (facingMode === "user") {
+          drawX = size - x - w / 2;
+        }
+
+        ctx.strokeRect(drawX, y - h / 2, w, h);
+        foundFallInFrame = true;
       }
+
 
       // --- วาดกรอบตรวจจับ คน และ สัตว์ (ที่เพิ่มเข้ามา) ---
       objectPredictions.forEach((pred: any) => {
@@ -226,7 +246,7 @@ export default function FallDetector({
 
       if (foundFallInFrame) {
         fallCounter.current += 1;
-        if (fallCounter.current >= 5) onFallDetected();
+        if (fallCounter.current >= 15) onFallDetected();
       } else {
         fallCounter.current = Math.max(0, fallCounter.current - 1);
       }
