@@ -1,54 +1,60 @@
 "use client";
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { db } from "@/lib/firebase";
 import { ref, onValue, set, query, limitToLast, remove, off } from "firebase/database";
 import { useEmergency } from "@/hooks/useEmergency";
-import { ShieldAlert, Activity, History, Trash2, Home } from "lucide-react";
+import { ShieldAlert, Activity, History, Trash2, Home, X } from "lucide-react";
 
 const CLOUDFLARE_WORKER_URL = "https://cctv-stream-worker.aman02012548.workers.dev";
+
+interface HistoryItem { id: string; evidence?: string; timestamp?: number; timeStr?: string; }
 
 export default function MonitorPage() {
   const [isEmergency, setIsEmergency] = useState(false);
   const [liveFrame, setLiveFrame] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<string | null>(null);
   const [fallTime, setFallTime] = useState<string | null>(null);
-  const [history, setHistory] = useState<any[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isOffline, setIsOffline] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
 
   const lastUpdateRef = useRef<number>(Date.now());
   const prevEmergencyRef = useRef(false);
-  const isMounted = useRef(true);
   const { triggerAlarm, requestPermission, stopAlarm } = useEmergency();
 
-  // ---------------- TURBO FETCH (CLOUDFLARE) ----------------
-  const fetchLiveStream = useCallback(() => {
-    if (!isMounted.current) return;
-    
-    const timestamp = Date.now();
-    const img = new Image();
-    img.src = `${CLOUDFLARE_WORKER_URL}?t=${timestamp}`;
-
-    img.onload = () => {
-      if (!isMounted.current) return;
-      setLiveFrame(img.src);
-      lastUpdateRef.current = Date.now();
-      setIsOffline(false);
-      // ดึงภาพถัดไปทันทีที่วาดเสร็จเพื่อความต่อเนื่อง
-      requestAnimationFrame(fetchLiveStream);
-    };
-
-    img.onerror = () => {
-      if (isMounted.current) setTimeout(fetchLiveStream, 500);
-    };
-  }, []);
-
   useEffect(() => {
-    isMounted.current = true;
     requestPermission();
-    fetchLiveStream();
+    let isMounted = true;
 
-    // ฟังเหตุการณ์แจ้งเตือนและประวัติจาก Firebase
+    // --- ส่วนที่ปรับปรุง: Turbo Fetching & Zero Flicker ---
+    const fetchLiveStream = () => {
+      if (!isMounted) return;
+      
+      const timestamp = Date.now();
+      const img = new Image();
+      // สร้าง URL ใหม่เพื่อป้องกัน Cache และดึงภาพล่าสุด
+      const nextFrameUrl = `${CLOUDFLARE_WORKER_URL}?t=${timestamp}`;
+      img.src = nextFrameUrl;
+
+      img.onload = () => {
+        if (!isMounted) return;
+        setLiveFrame(nextFrameUrl); // อัปเดตเมื่อภาพโหลดเสร็จใน Memory แล้วเท่านั้น
+        lastUpdateRef.current = Date.now();
+        setIsOffline(false);
+        
+        // ใช้ requestAnimationFrame แทนการหน่วงเวลาคงที่ เพื่อความสมูทสูงสุด
+        requestAnimationFrame(fetchLiveStream);
+      };
+
+      img.onerror = () => {
+        if (isMounted) setTimeout(fetchLiveStream, 500);
+      };
+    };
+
+    fetchLiveStream();
+    // --------------------------------------------------
+
     const eventRef = ref(db, "system/fall_event");
     onValue(eventRef, (snapshot) => {
       const data = snapshot.val();
@@ -56,7 +62,6 @@ export default function MonitorPage() {
       setIsEmergency(data.detected);
       setEvidence(data.evidence);
       if (data.timestamp) setFallTime(new Date(data.timestamp).toLocaleString());
-      
       if (data.detected && !prevEmergencyRef.current) triggerAlarm("Emergency: Fall detected");
       if (!data.detected) stopAlarm();
       prevEmergencyRef.current = data.detected;
@@ -67,75 +72,120 @@ export default function MonitorPage() {
       const data = snapshot.val();
       if (!data) { setHistory([]); return; }
       const parsed = Object.entries(data).map(([id, val]: any) => ({
-        id, ...val
+        id, evidence: val.evidence, timestamp: val.timestamp, timeStr: val.timeStr
       })).reverse();
       setHistory(parsed);
     });
 
     const offlineTimer = setInterval(() => {
-      if (Date.now() - lastUpdateRef.current > 4000) setIsOffline(true);
+      if (Date.now() - lastUpdateRef.current > 5000) setIsOffline(true);
     }, 2000);
 
     return () => {
-      isMounted.current = false;
+      isMounted = false;
       clearInterval(offlineTimer);
       off(eventRef);
       off(historyRef);
       stopAlarm();
     };
-  }, [fetchLiveStream, triggerAlarm, stopAlarm, requestPermission]);
+  }, [triggerAlarm, stopAlarm, requestPermission]);
 
   const handleReset = async () => {
     stopAlarm();
     await set(ref(db, "system/fall_event"), { detected: false, evidence: null, timestamp: null });
   };
 
+  const handleDeleteHistory = async (id: string) => {
+    if (window.confirm("ต้องการลบประวัตินี้หรือไม่?")) await remove(ref(db, `history/falls/${id}`));
+  };
+
   return (
-    <div className={`min-h-screen transition-colors duration-500 ${isEmergency ? "bg-red-950" : "bg-black"} text-white font-sans`}>
-      <header className="border-b border-white/5 bg-black/40 backdrop-blur-xl sticky top-0 z-50 px-6 py-4 flex justify-between items-center">
-        <div className="flex items-center gap-4">
-          <Link href="/"><div className="p-2.5 bg-zinc-800 rounded-2xl"><Home size={20} className="text-zinc-400" /></div></Link>
-          <div className={`p-2.5 rounded-2xl ${isEmergency ? "bg-red-600 animate-pulse" : "bg-blue-600"}`}><ShieldAlert size={22} className="text-white" /></div>
-          <h1 className="font-black italic text-xl uppercase tracking-tighter">Live Monitor</h1>
+    <div className={`min-h-screen transition-all duration-700 ${isEmergency ? "bg-red-950" : "bg-[#050505]"} text-zinc-100`}>
+      {selectedImage && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 cursor-zoom-out"
+          onClick={() => setSelectedImage(null)}
+        >
+          <button className="absolute top-6 right-6 p-3 bg-white/10 rounded-full hover:bg-white/20 transition-all">
+            <X size={24} />
+          </button>
+          <img
+            src={selectedImage}
+            className="max-w-full max-h-full rounded-2xl shadow-2xl border border-white/10 object-contain animate-in zoom-in-95 duration-300"
+            alt="Enlarged Evidence"
+          />
         </div>
-        <div className={`px-4 py-1 rounded-full text-[10px] font-black border ${isOffline ? "border-red-500 text-red-500" : "border-green-500 text-green-500"}`}>
-          {isOffline ? "CONNECTION LOST" : "EDGE FEED ACTIVE"}
+      )}
+
+      <header className="border-b border-white/5 bg-black/40 backdrop-blur-xl sticky top-0 z-50">
+        <div className="max-w-[1600px] mx-auto px-6 py-4 flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <Link href="/"><div className="p-2.5 bg-zinc-800 rounded-2xl cursor-pointer hover:bg-zinc-700 transition-all"><Home size={20} className="text-zinc-400" /></div></Link>
+            <div className={`p-2.5 rounded-2xl ${isEmergency ? "bg-red-600 animate-pulse" : "bg-blue-600"}`}><ShieldAlert size={22} className="text-white" /></div>
+            <div><h1 className="font-black uppercase text-xl italic leading-none text-white">Monitor Hub</h1><p className="text-[10px] text-zinc-500 font-bold uppercase mt-1">Paid Protocol Active</p></div>
+          </div>
+          <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black border ${isOffline ? "border-red-500 text-red-500 bg-red-500/5" : "border-green-500 text-green-500 bg-green-500/5"}`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${isOffline ? "bg-red-500" : "bg-green-500 animate-pulse"}`} />
+            {isOffline ? "CAM OFFLINE" : "LIVE STREAM"}
+          </div>
         </div>
       </header>
 
       <main className="max-w-[1600px] mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-8 space-y-6">
           {isEmergency && (
-            <section className="bg-red-600 rounded-[2.5rem] p-6 flex flex-col md:flex-row gap-6 items-center shadow-2xl">
-              {evidence && <img src={evidence} className="w-48 aspect-square rounded-2xl object-cover shadow-2xl" alt="Fall Evidence" />}
+            <section className="bg-red-600 rounded-[2.5rem] p-6 flex flex-col md:flex-row gap-6 items-center shadow-2xl animate-in slide-in-from-top duration-500">
+              {evidence && (
+                <img
+                  src={evidence}
+                  className="w-48 aspect-square rounded-2xl object-cover shadow-2xl cursor-pointer hover:scale-105 transition-transform"
+                  alt="Evidence"
+                  onClick={() => setSelectedImage(evidence)}
+                />
+              )}
               <div className="flex-1 text-center md:text-left">
-                <h2 className="text-3xl font-black uppercase italic">Fall Event Detected</h2>
-                <p className="text-sm font-bold opacity-80">Incident Time: {fallTime ?? "-"}</p>
-                <button onClick={handleReset} className="mt-6 bg-white text-red-600 px-8 py-3 rounded-2xl font-black shadow-xl">RESOLVE ALERT</button>
+                <h2 className="text-3xl font-black uppercase italic text-white">Fall Event Detected</h2>
+                <p className="text-sm font-bold opacity-90 text-white mt-1">Alert Time: {fallTime ?? "-"}</p>
+                <button onClick={handleReset} className="mt-6 bg-white text-red-600 px-8 py-3 rounded-2xl font-black transition-all shadow-xl hover:bg-zinc-100 active:scale-95">RESOLVE ALERT</button>
               </div>
             </section>
           )}
 
-          <section className="relative aspect-video bg-zinc-950 rounded-[2.5rem] overflow-hidden border border-white/5 shadow-2xl flex items-center justify-center">
+          <section className="relative aspect-video bg-zinc-900 rounded-[2.5rem] overflow-hidden border border-white/5 shadow-2xl flex items-center justify-center">
             {liveFrame && !isOffline ? (
-              <img src={liveFrame} className="w-full h-full object-contain bg-black" style={{ willChange: 'transform' }} alt="Live Streaming" />
+              <img 
+                src={liveFrame} 
+                className="w-full h-full object-contain" 
+                style={{ 
+                  imageRendering: 'auto', // หรือใช้ 'crisp-edges' หากต้องการภาพคมจัดแบบ Pixel
+                  willChange: 'transform' 
+                }}
+                alt="Live Feed" 
+              />
             ) : (
-              <div className="flex flex-col items-center justify-center text-zinc-700">
-                <Activity className="animate-pulse mb-4" size={48} /><p className="font-bold uppercase tracking-widest text-xs">Waiting for Edge Stream...</p>
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 bg-zinc-950">
+                <Activity className="animate-pulse mb-4 text-zinc-800" size={48} />
+                <p className="font-bold uppercase tracking-widest text-sm opacity-50 text-zinc-500">Connecting to Cloudflare Hub...</p>
               </div>
             )}
           </section>
         </div>
 
         <div className="lg:col-span-4">
-          <section className="bg-zinc-900/50 rounded-[2.5rem] p-8 h-full border border-white/5 backdrop-blur-md flex flex-col">
-            <h3 className="text-xs font-bold uppercase mb-6 flex items-center gap-2 text-zinc-400"><History size={14} /> Incident Logs</h3>
-            <div className="space-y-4 overflow-y-auto flex-1 pr-2">
+          <section className="bg-zinc-900/50 rounded-[2.5rem] p-8 h-full border border-white/5 backdrop-blur-md shadow-2xl overflow-hidden flex flex-col">
+            <h3 className="text-xs font-bold uppercase mb-6 flex items-center gap-2 text-zinc-400"><History size={14} /> Incident Logs (Firebase)</h3>
+            <div className="space-y-4 overflow-y-auto flex-1 pr-2 custom-scrollbar">
               {history.map((item) => (
-                <div key={item.id} className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5 group hover:bg-white/10 transition-all">
-                  {item.evidence && <img src={item.evidence} className="w-16 h-16 rounded-xl object-cover" alt="Thumb" />}
-                  <div className="flex-1 text-[11px] font-bold"><p className="text-zinc-200">{item.timeStr ?? "-"}</p><p className="text-red-500/80 uppercase">Log Saved</p></div>
-                  <button onClick={() => remove(ref(db, `history/falls/${item.id}`))} className="p-2 text-zinc-600 hover:text-red-500 opacity-0 group-hover:opacity-100"><Trash2 size={18} /></button>
+                <div key={item.id} className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5 hover:bg-white/10 transition-all group shadow-lg">
+                  {item.evidence && (
+                    <img
+                      src={item.evidence}
+                      className="w-16 h-16 rounded-xl object-cover shadow-lg cursor-pointer hover:ring-2 ring-blue-500 transition-all"
+                      onClick={() => setSelectedImage(item.evidence!)}
+                    />
+                  )}
+                  <div className="flex-1"><p className="text-[11px] font-bold text-zinc-200">{item.timeStr ?? "-"}</p><p className="text-[9px] uppercase font-black text-red-500/80 mt-1">Log Saved</p></div>
+                  <button onClick={() => handleDeleteHistory(item.id)} className="p-2 text-zinc-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500/10 rounded-lg"><Trash2 size={18} /></button>
                 </div>
               ))}
             </div>
